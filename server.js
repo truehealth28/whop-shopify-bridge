@@ -208,8 +208,9 @@ app.get("/auth", (req, res) => {
 
 app.get("/auth/callback", async (req, res) => {
   try {
-    const { code, hmac, ...rest } = req.query;
-    // Verify the HMAC Shopify signed the params with
+    const { hmac, signature, ...rest } = req.query;
+    const code = req.query.code;
+    // Verify HMAC over ALL query params except hmac/signature (code MUST stay in).
     const msg = Object.keys(rest).sort().map((k) => `${k}=${rest[k]}`).join("&");
     const digest = crypto.createHmac("sha256", SHOPIFY_API_SECRET).update(msg).digest("hex");
     if (digest !== hmac) return res.status(400).send("HMAC validation failed");
