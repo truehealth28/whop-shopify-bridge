@@ -127,10 +127,14 @@ app.post("/webhooks/whop", express.text({ type: "*/*" }), async (req, res) => {
   }
   res.sendStatus(200); // ack fast so Whop doesn't retry
 
-  if (event.type !== "payment.succeeded") return;
+  // Whop v1 names the "payment went through" event `invoice_paid`. We log every
+  // event type so the first real payment confirms the exact name + payload shape.
+  console.log("[webhook] received type:", event.type);
+  const ORDER_TRIGGERS = new Set(["invoice_paid", "payment.succeeded", "payment_succeeded"]);
+  if (!ORDER_TRIGGERS.has(event.type)) return; // membership_activated etc. -> logged only
   const payment = event.data;
-  if (processedPayments.has(payment.id)) return;
-  processedPayments.add(payment.id);
+  if (payment && processedPayments.has(payment.id)) return;
+  if (payment) processedPayments.add(payment.id);
 
   try {
     console.log("[payment.succeeded] payload:", JSON.stringify(payment)); // VERIFY
