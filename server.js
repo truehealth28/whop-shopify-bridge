@@ -159,12 +159,29 @@ app.post("/checkout/create", express.json(), async (req, res) => {
 // ============================================================================
 // Uses draftOrderCalculate, which returns exactly what Shopify's own checkout
 // would show (your configured Standard / Expedited / free-over-threshold rates).
-async function shopifyShippingRates(lineItems, address) {
+// Configured shipping rates — a reliable fallback that mirrors the store's
+// Shopify Shipping settings (Standard $4.95 under $48, Free Standard $48+,
+// Expedited $8.95). Used when the live draftOrderCalculate lookup isn't
+// available (the Admin token lacks the draft_orders scope). The flow upgrades
+// to pulling live from Shopify automatically the moment that scope is present.
+function builtinRates(subtotal) {
+  const sub = Number(subtotal) || 0;
+  const out = [];
+  if (sub >= 48) out.push({ handle: "builtin-free-standard", title: "Free Standard Shipping", price: 0 });
+  else out.push({ handle: "builtin-standard", title: "Standard", price: 4.95 });
+  out.push({ handle: "builtin-expedited", title: "Expedited Shipping", price: 8.95 });
+  return out;
+}
+
+let lastRatesDebug = null;
+// Live shipping rates straight from Shopify (exactly what its checkout shows).
+// Requires the draft_orders scope on the Admin token.
+async function liveShopifyRates(lineItems, address) {
   const liGql = (lineItems || []).filter((li) => li.variant_id).map((li) => ({
     variantId: `gid://shopify/ProductVariant/${li.variant_id}`,
     quantity: Number(li.quantity) || 1,
   }));
-  if (!liGql.length) return [];
+  if (!liGql.length) return { rates: [] };
   const shippingAddress = {
     address1: address.line1 || address.address1 || "",
     address2: address.line2 || address.address2 || "",
@@ -186,9 +203,23 @@ async function shopifyShippingRates(lineItems, address) {
   });
   const data = await resp.json();
   const calc = ((data.data || {}).draftOrderCalculate) || {};
-  if (calc.userErrors && calc.userErrors.length) console.error("[rates] userErrors", JSON.stringify(calc.userErrors));
-  const rates = ((calc.calculatedDraftOrder || {}).availableShippingRates) || [];
-  return rates.map((r) => ({ handle: r.handle, title: r.title, price: Number(r.price.amount) || 0 }));
+  const userErrors = (calc.userErrors && calc.userErrors.length ? calc.userErrors : (data.errors || []));
+  const rates = (((calc.calculatedDraftOrder || {}).availableShippingRates) || [])
+    .map((r) => ({ handle: r.handle, title: r.title, price: Number(r.price.amount) || 0 }));
+  lastRatesDebug = { status: resp.status, rateCount: rates.length, userErrors };
+  if (userErrors.length) console.error("[rates] live lookup errors", JSON.stringify(userErrors));
+  return { rates };
+}
+
+// Prefer live Shopify rates; fall back to the configured table so the checkout
+// never blocks if the live lookup is unavailable.
+async function shopifyShippingRates(lineItems, address) {
+  const subtotal = (lineItems || []).reduce((s, li) => s + (Number(li.price) || 0) * (Number(li.quantity) || 1), 0);
+  try {
+    const live = await liveShopifyRates(lineItems, address);
+    if (live.rates.length) return live.rates;
+  } catch (e) { console.error("[rates] live lookup threw", e.message); }
+  return builtinRates(subtotal);
 }
 
 app.post("/shipping/rates", express.json(), async (req, res) => {
@@ -204,6 +235,9 @@ app.post("/shipping/rates", express.json(), async (req, res) => {
     res.status(500).json({ error: "rates failed" });
   }
 });
+
+// Diagnostic: shows why the last live rate lookup did/didn't return rates.
+app.get("/shipping/rates-debug", (_req, res) => res.json({ lastRatesDebug }));
 
 // ============================================================================
 // 1b) FINALIZE  ->  lock the rate, build the Whop charge for subtotal+shipping
