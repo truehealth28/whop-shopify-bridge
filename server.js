@@ -229,6 +229,11 @@ a{color:inherit}
 .os-was{color:#9a9a9a;text-decoration:line-through;font-weight:500;margin-right:7px;font-size:13px}
 .os-savings{display:flex;align-items:center;justify-content:space-between;margin-top:14px;padding:11px 14px;background:#eaf7ee;border:1px solid #cdebd6;border-radius:9px;color:#1a7f37;font-size:13.5px;font-weight:700}
 .os-savings-tag{display:flex;align-items:center;gap:6px;letter-spacing:.02em}
+.os-toggle{display:none;align-items:center;justify-content:space-between;width:100%;background:none;border:0;cursor:pointer;font-family:inherit;color:#16264a;font-weight:600;font-size:15px;padding:0}
+.os-toggle-l{display:flex;align-items:center;gap:7px}
+.os-toggle .chev{display:inline-block;transition:transform .2s;font-size:13px}
+.os-toggle-r{font-weight:700;color:#111;font-size:16px}
+.col-side.open .os-toggle .chev{transform:rotate(180deg)}
 .badges{margin-top:22px;padding-top:18px;border-top:1px solid #ededed;display:flex;flex-wrap:wrap;gap:10px 16px;font-size:12.5px;color:#777}
 .badges span{display:flex;align-items:center;gap:5px}
 @media(max-width:820px){
@@ -236,6 +241,11 @@ a{color:inherit}
   .col-main,.col-side{display:block;flex:none}
   .col-main>.inner,.col-side>.inner{max-width:640px;margin:0 auto;padding:24px 20px;position:static}
   .col-side{order:-1;border-left:0;border-bottom:1px solid #e6e6e6}
+  .col-side>.inner{padding:15px 20px}
+  .os-toggle{display:flex}
+  .os-h{display:none}
+  .os-body{display:none}
+  .col-side.open .os-body{display:block;margin-top:18px}
 }
 </style>
 </head><body>
@@ -248,6 +258,8 @@ a{color:inherit}
       <div class="trust">🔒 <b>Secure SSL checkout</b> — your info is encrypted &amp; never stored.</div>
     </div></main>
     <aside class="col-side"><div class="inner">
+      <button type="button" class="os-toggle" onclick="this.closest('.col-side').classList.toggle('open')"><span class="os-toggle-l">Order summary <span class="chev">⌄</span></span><span class="os-toggle-r">${money(amount)}</span></button>
+      <div class="os-body">
       <h2 class="os-h">Order summary</h2>
       <div class="os-items">${itemsHtml}</div>
       <div class="os-rows">
@@ -255,8 +267,9 @@ a{color:inherit}
         <div class="os-row"><span>Shipping</span><span class="os-free">FREE</span></div>
       </div>
       <div class="os-total"><span>Total</span><span><span class="os-cur">USD</span>${money(amount)}</span></div>
-      ${savings > 0.001 ? `<div class="os-savings"><span class="os-savings-tag">🏷️ TOTAL SAVINGS</span><span>−${money(savings)}</span></div>` : ""}
+      ${savings > 0.001 ? `<div class="os-savings"><span class="os-savings-tag">🏷️ TOTAL SAVINGS</span><span>${money(savings)}</span></div>` : ""}
       <div class="badges"><span>🇺🇸 Made in USA</span><span>✓ GMP Certified</span><span>✓ 90-Day Money-Back</span></div>
+      </div>
     </div></aside>
   </div>
 </div>
