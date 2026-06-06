@@ -1,0 +1,1 @@
+# whop-shopify-bridge
