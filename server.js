@@ -115,7 +115,10 @@ app.post("/checkout/create", express.json(), async (req, res) => {
         product: {
           external_identifier: WHOP_PRODUCT_EXTERNAL_ID,
           title: "ShapeDrops Order",
-          collect_shipping_address: true,
+          // We collect the shipping address ourselves on the /c page (Whop's
+          // embed gives no reliable way to read its address field back), so the
+          // Whop checkout only needs to handle email + payment.
+          collect_shipping_address: false,
           custom_statement_descriptor: STATEMENT_DESCRIPTOR,
         },
       },
@@ -170,6 +173,8 @@ app.get("/c", (req, res) => {
   const esc = (s) => String(s == null ? "" : s).replace(/[&<>"']/g, (c) =>
     ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
   const money = (n) => "$" + (Number(n) || 0).toFixed(2);
+  const US_STATES = { AL:"Alabama",AK:"Alaska",AZ:"Arizona",AR:"Arkansas",CA:"California",CO:"Colorado",CT:"Connecticut",DE:"Delaware",DC:"District of Columbia",FL:"Florida",GA:"Georgia",HI:"Hawaii",ID:"Idaho",IL:"Illinois",IN:"Indiana",IA:"Iowa",KS:"Kansas",KY:"Kentucky",LA:"Louisiana",ME:"Maine",MD:"Maryland",MA:"Massachusetts",MI:"Michigan",MN:"Minnesota",MS:"Mississippi",MO:"Missouri",MT:"Montana",NE:"Nebraska",NV:"Nevada",NH:"New Hampshire",NJ:"New Jersey",NM:"New Mexico",NY:"New York",NC:"North Carolina",ND:"North Dakota",OH:"Ohio",OK:"Oklahoma",OR:"Oregon",PA:"Pennsylvania",RI:"Rhode Island",SC:"South Carolina",SD:"South Dakota",TN:"Tennessee",TX:"Texas",UT:"Utah",VT:"Vermont",VA:"Virginia",WA:"Washington",WV:"West Virginia",WI:"Wisconsin",WY:"Wyoming" };
+  const stateOptions = Object.keys(US_STATES).map((c) => `<option value="${c}">${US_STATES[c]}</option>`).join("");
   let savings = 0;
   const itemsHtml = items.map((it) => {
     const qty = Number(it.quantity) || 1;
@@ -213,6 +218,18 @@ a{color:inherit}
 #placeOrder:hover{opacity:.88}#placeOrder:disabled{opacity:.45;cursor:default}
 .trust{text-align:center;color:#8a8a8a;font-size:12.5px;margin-top:16px;line-height:1.7}
 .trust b{color:#5a5a5a;font-weight:600}
+.shipform{margin-bottom:6px}
+.sf-h{font-size:15px;font-weight:600;margin:0 0 14px;color:#1a1a1a}
+.sf-in{width:100%;padding:13px 12px;border:1px solid #cdcdcd;border-radius:7px;font-size:15px;font-family:inherit;margin-bottom:10px;color:#1a1a1a;background:#fff;outline:none;-webkit-appearance:none;appearance:none}
+.sf-in::placeholder{color:#9b9b9b}
+.sf-in:focus{border-color:#16264a;box-shadow:0 0 0 1px #16264a}
+.sf-row{display:flex;gap:10px}
+.sf-row .sf-in{flex:1;min-width:0}
+.sf-country{-webkit-appearance:auto;appearance:auto}
+.sf-err{color:#c0392b;font-size:13px;margin:-2px 0 8px;display:none}
+.shipform.invalid .sf-err{display:block}
+.shipform.invalid .sf-in.bad{border-color:#c0392b;box-shadow:0 0 0 1px #c0392b}
+.sf-paylabel{font-size:15px;font-weight:600;margin:14px 0 12px;color:#1a1a1a}
 .os-h{font-size:13px;font-weight:600;text-transform:uppercase;letter-spacing:.04em;color:#8a8a8a;margin:0 0 18px}
 .os-item{display:flex;align-items:center;gap:14px;margin-bottom:18px}
 .os-thumb{position:relative;flex:0 0 auto}
@@ -253,6 +270,20 @@ a{color:inherit}
   <header class="hdr"><div class="hdr-in">${BRAND_LOGO_URL ? `<img src="${esc(BRAND_LOGO_URL)}" alt="${esc(BRAND_NAME)}" class="logo-img">` : `<span class="logo">${esc(BRAND_NAME)}<span class="tm">™</span></span>`}</div></header>
   <div class="page">
     <main class="col-main"><div class="inner">
+      <form id="shipForm" class="shipform" onsubmit="return false">
+        <h2 class="sf-h">Shipping address</h2>
+        <input class="sf-in" id="sf_name" placeholder="Full name" autocomplete="name">
+        <input class="sf-in" id="sf_line1" placeholder="Address" autocomplete="address-line1">
+        <input class="sf-in" id="sf_line2" placeholder="Apartment, suite, etc. (optional)" autocomplete="address-line2">
+        <div class="sf-row">
+          <input class="sf-in" id="sf_city" placeholder="City" autocomplete="address-level2">
+          <select class="sf-in sf-country" id="sf_state" autocomplete="address-level1"><option value="" selected disabled>State</option>${stateOptions}</select>
+          <input class="sf-in" id="sf_zip" placeholder="ZIP code" autocomplete="postal-code" inputmode="numeric">
+        </div>
+        <select class="sf-in sf-country" id="sf_country" autocomplete="country"><option value="US" selected>United States</option></select>
+        <div id="sf_err" class="sf-err">Please complete your shipping address above.</div>
+      </form>
+      <div class="sf-paylabel">Contact &amp; payment</div>
       <div id="whop-embedded-checkout" data-whop-checkout-plan-id="${plan}"${session ? ` data-whop-checkout-session="${session}"` : ""} data-whop-checkout-theme="light" data-whop-checkout-style-container-padding-x="0" data-whop-checkout-style-container-padding-top="0" data-whop-checkout-return-url="${HOST_URL}/thanks" data-whop-checkout-hide-submit-button="true" data-whop-checkout-on-state-change="onWhopState" data-whop-checkout-on-complete="onWhopComplete"></div>
       <button id="placeOrder" disabled>Place Order &middot; ${money(amount)}</button>
       <div class="trust">🔒 <b>Secure SSL checkout</b> — your info is encrypted &amp; never stored.</div>
@@ -275,15 +306,23 @@ a{color:inherit}
 </div>
 <script>
 var btn=document.getElementById('placeOrder');
+var form=document.getElementById('shipForm');
 var capturedAddress=null;
-function isAddr(a){return a&&(a.line1||a.address1);}
-async function grabAddress(){try{var a=await wco.getAddress('whop-embedded-checkout');if(isAddr(a))capturedAddress=a;}catch(e){}}
-btn.addEventListener('click',async function(){btn.disabled=true;btn.textContent='Processing…';await grabAddress();try{wco.submit('whop-embedded-checkout')}catch(e){console.error(e);btn.disabled=false;btn.textContent='Place Order · ${money(amount)}';}});
+var REQ=['sf_name','sf_line1','sf_city','sf_state','sf_zip'];
+function gv(id){var el=document.getElementById(id);return el?el.value.trim():'';}
+function readShip(){return {name:gv('sf_name'),country:gv('sf_country')||'US',line1:gv('sf_line1'),line2:gv('sf_line2'),city:gv('sf_city'),state:gv('sf_state'),postalCode:gv('sf_zip')};}
+function validShip(){var ok=true;REQ.forEach(function(id){var el=document.getElementById(id);if(el){if(!el.value.trim()){el.classList.add('bad');ok=false;}else{el.classList.remove('bad');}}});form.classList.toggle('invalid',!ok);return ok;}
+REQ.forEach(function(id){var el=document.getElementById(id);if(el){var clr=function(){el.classList.remove('bad');if(!form.querySelector('.bad'))form.classList.remove('invalid');};el.addEventListener('input',clr);el.addEventListener('change',clr);}});
+btn.addEventListener('click',function(){
+  if(!validShip()){var b=form.querySelector('.bad');if(b)b.focus();return;}
+  capturedAddress=readShip();
+  btn.disabled=true;btn.textContent='Processing…';
+  try{wco.submit('whop-embedded-checkout')}catch(e){console.error(e);btn.disabled=false;btn.textContent='Place Order · ${money(amount)}';}
+});
 window.onWhopState=function(state){try{if(state==='ready'){btn.disabled=false;}else if(state==='disabled'){btn.disabled=true;}}catch(e){}};
 window.onWhopComplete=async function(planId,receiptId){
   try{${META_PIXEL_ID ? `fbq('track','Purchase',{value:${amount},currency:'USD'});` : ""}}catch(e){}
-  var address=capturedAddress||{};
-  if(!isAddr(address)){try{var a=await wco.getAddress('whop-embedded-checkout');if(a)address=a;}catch(e){}}
+  var address=capturedAddress||readShip();
   try{await fetch('${HOST_URL}/order-complete',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({planId:planId||'${plan}',receiptId:receiptId,address:address})})}catch(e){}
   document.getElementById('checkout-root').innerHTML='<div style="max-width:520px;margin:80px auto;padding:0 24px;text-align:center"><div style="font-size:54px;line-height:1">✅</div><h1 style="font-size:24px;margin:14px 0 8px">Order confirmed</h1><p style="color:#555;font-size:15px;line-height:1.6">Thank you for your order! It\\'s on its way and a confirmation email is in your inbox.</p></div>';
 };
