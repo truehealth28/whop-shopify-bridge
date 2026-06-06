@@ -1,24 +1,21 @@
 // ============================================================================
 // TrueHealthic — Whop <-> Shopify checkout bridge  (the "Lasso-style" engine)
 // ----------------------------------------------------------------------------
-// What it does:
-//   1) /checkout/create  — storefront calls this with the live Shopify cart.
-//      It creates a Whop checkout for the EXACT cart total, turns on shipping-
-//      address collection + your billing descriptor, and stashes the cart's
-//      line items in metadata. Returns a Whop checkout URL to send the buyer to.
-//   2) /webhooks/whop     — Whop calls this when a payment succeeds. We verify
-//      it, read the shipping address + the line items from metadata, and create
-//      a PAID order in Shopify so fulfillment / inventory run as normal.
-//   3) /auth + /auth/callback — one-time Shopify install to mint the Admin API
-//      token (offline). Visit HOST_URL/auth once after deploy, approve, and the
-//      bridge captures the token. (Or paste a token into SHOPIFY_ADMIN_TOKEN.)
+// Flow (Shopify-style stepped checkout, on your own domain):
+//   1) /checkout/create — storefront posts the live Shopify cart. We stash the
+//      line items + subtotal and send the buyer to /c (address step).
+//   2) /c (address step) — buyer enters their shipping address; the page calls
+//      /shipping/rates to show YOUR real Shopify shipping options (Standard /
+//      Expedited). Buyer picks one.
+//   3) /checkout/finalize — locks the chosen rate, creates a Whop checkout for
+//      (subtotal + shipping), stores address + shipping, and returns the plan to
+//      mount the payment embed for.
+//   4) /c?step=pay — mounts the Whop embedded checkout for the full total. On
+//      success the page posts /order-complete (and the Whop webhook is a
+//      fallback), which creates a PAID Shopify order WITH the shipping line +
+//      shipping address so fulfillment / inventory run as normal.
 //
-// Real values for TrueHealthic are pre-filled in .env.example. Secrets go in
-// Railway's Variables tab — never in this file.
-//
-// NOTE: lines marked "VERIFY" are confirmed against the first real SANDBOX
-// webhook before going live (the full payload is logged once so we can see the
-// exact field names Whop sends).
+// Secrets live in Railway's Variables tab — never in this file.
 // ============================================================================
 
 import express from "express";
@@ -90,7 +87,7 @@ app.use((req, res, next) => {
 });
 
 // ============================================================================
-// 1) STOREFRONT  ->  create a Whop checkout for the live cart
+// 1) STOREFRONT  ->  stash the live cart, send buyer to the address step
 // ============================================================================
 app.post("/checkout/create", express.json(), async (req, res) => {
   try {
@@ -102,6 +99,9 @@ app.post("/checkout/create", express.json(), async (req, res) => {
       0
     );
 
+    // A Whop checkout for the SUBTOTAL (shipping is added at /checkout/finalize
+    // once the buyer picks a rate). This plan id is our cart key for the address
+    // step; the real payment runs on the finalize plan.
     const checkout = await whop.checkoutConfigurations.create({
       currency: "usd",
       plan: {
@@ -109,18 +109,10 @@ app.post("/checkout/create", express.json(), async (req, res) => {
         currency: "usd",
         initial_price: Number(total.toFixed(2)),
         plan_type: "one_time",
-        force_create_new_plan: true, // unique plan per cart, so the webhook can map it back
-        // Attach to (or create) one physical product that collects shipping
-        // and uses your own statement descriptor.
+        force_create_new_plan: true,
         product: {
-          // Fresh product id so collect_shipping_address:false actually applies
-          // (the original product had address collection baked in and ignored
-          // the per-checkout flag). We collect shipping on the /c page instead.
           external_identifier: WHOP_PRODUCT_EXTERNAL_ID + "-noship",
           title: "ShapeDrops Order",
-          // We collect the shipping address ourselves on the /c page (Whop's
-          // embed gives no reliable way to read its address field back), so the
-          // Whop checkout only needs to handle email + payment.
           collect_shipping_address: false,
           custom_statement_descriptor: STATEMENT_DESCRIPTOR,
         },
@@ -134,8 +126,6 @@ app.post("/checkout/create", express.json(), async (req, res) => {
       },
     });
 
-    // Remember this cart so the webhook can rebuild the Shopify order later,
-    // keyed by the unique plan id (Whop doesn't pass our metadata to the webhook).
     const compareMap = await fetchCompareAt(items.map((it) => it.variantId));
     cartByPlan.set(checkout.plan.id, {
       lineItems: items.map((it) => ({
@@ -148,14 +138,14 @@ app.post("/checkout/create", express.json(), async (req, res) => {
       })),
       cartToken: cartToken || "",
       email: email || null,
-      amount: Number(total.toFixed(2)),
+      amount: Number(total.toFixed(2)),   // subtotal at this stage
+      subtotal: Number(total.toFixed(2)),
     });
     persistCarts();
 
     return res.json({
       sessionId: checkout.id,
       planId: checkout.plan.id,
-      // v2: send buyers to OUR on-domain embedded checkout, not whop.com
       checkoutUrl: `${HOST_URL}/c?plan=${checkout.plan.id}&session=${checkout.id}`,
     });
   } catch (err) {
@@ -165,19 +155,148 @@ app.post("/checkout/create", express.json(), async (req, res) => {
 });
 
 // ============================================================================
-// 1b) ON-DOMAIN EMBEDDED CHECKOUT  (keeps buyers on your site + collects address)
+// 1a) SHIPPING RATES  ->  ask Shopify for the real options for this address
+// ============================================================================
+// Uses draftOrderCalculate, which returns exactly what Shopify's own checkout
+// would show (your configured Standard / Expedited / free-over-threshold rates).
+async function shopifyShippingRates(lineItems, address) {
+  const liGql = (lineItems || []).filter((li) => li.variant_id).map((li) => ({
+    variantId: `gid://shopify/ProductVariant/${li.variant_id}`,
+    quantity: Number(li.quantity) || 1,
+  }));
+  if (!liGql.length) return [];
+  const shippingAddress = {
+    address1: address.line1 || address.address1 || "",
+    address2: address.line2 || address.address2 || "",
+    city: address.city || "",
+    province: address.state || address.province || "",
+    country: "United States",
+    zip: address.postalCode || address.zip || "",
+  };
+  const query = `mutation calc($input: DraftOrderInput!) {
+    draftOrderCalculate(input: $input) {
+      calculatedDraftOrder { availableShippingRates { handle title price { amount currencyCode } } }
+      userErrors { field message }
+    }
+  }`;
+  const resp = await fetch(`https://${SHOPIFY_STORE}/admin/api/${SHOPIFY_API_VERSION}/graphql.json`, {
+    method: "POST",
+    headers: { "X-Shopify-Access-Token": shopifyToken, "Content-Type": "application/json" },
+    body: JSON.stringify({ query, variables: { input: { lineItems: liGql, shippingAddress } } }),
+  });
+  const data = await resp.json();
+  const calc = ((data.data || {}).draftOrderCalculate) || {};
+  if (calc.userErrors && calc.userErrors.length) console.error("[rates] userErrors", JSON.stringify(calc.userErrors));
+  const rates = ((calc.calculatedDraftOrder || {}).availableShippingRates) || [];
+  return rates.map((r) => ({ handle: r.handle, title: r.title, price: Number(r.price.amount) || 0 }));
+}
+
+app.post("/shipping/rates", express.json(), async (req, res) => {
+  try {
+    const { plan, address } = req.body || {};
+    const cart = cartByPlan.get(String(plan || "")) || {};
+    if (!cart.lineItems || !cart.lineItems.length) return res.status(404).json({ error: "no cart" });
+    if (!address || !(address.postalCode || address.zip)) return res.status(400).json({ error: "address required" });
+    const rates = await shopifyShippingRates(cart.lineItems, address);
+    res.json({ rates });
+  } catch (err) {
+    console.error("[/shipping/rates]", err);
+    res.status(500).json({ error: "rates failed" });
+  }
+});
+
+// ============================================================================
+// 1b) FINALIZE  ->  lock the rate, build the Whop charge for subtotal+shipping
+// ============================================================================
+app.post("/checkout/finalize", express.json(), async (req, res) => {
+  try {
+    const { plan, address, handle, title } = req.body || {};
+    const cart = cartByPlan.get(String(plan || ""));
+    if (!cart || !cart.lineItems || !cart.lineItems.length) return res.status(404).json({ error: "no cart" });
+    if (!address || !(address.line1 || address.address1)) return res.status(400).json({ error: "address required" });
+
+    // Re-fetch rates server-side and match the chosen handle (never trust a
+    // client-supplied price). Fall back to title, then the cheapest rate.
+    const rates = await shopifyShippingRates(cart.lineItems, address);
+    const chosen = rates.find((r) => r.handle === handle)
+      || rates.find((r) => r.title === title)
+      || rates.sort((a, b) => a.price - b.price)[0];
+    if (!chosen) return res.status(409).json({ error: "no shipping rate" });
+
+    const subtotal = Number(cart.subtotal != null ? cart.subtotal : cart.amount)
+      || cart.lineItems.reduce((s, li) => s + (Number(li.price) || 0) * (Number(li.quantity) || 1), 0);
+    const newAmount = Math.round((subtotal + Number(chosen.price)) * 100) / 100;
+
+    const checkout = await whop.checkoutConfigurations.create({
+      currency: "usd",
+      plan: {
+        company_id: WHOP_COMPANY_ID,
+        currency: "usd",
+        initial_price: newAmount,
+        plan_type: "one_time",
+        force_create_new_plan: true,
+        product: {
+          external_identifier: WHOP_PRODUCT_EXTERNAL_ID + "-noship",
+          title: "ShapeDrops Order",
+          collect_shipping_address: false,
+          custom_statement_descriptor: STATEMENT_DESCRIPTOR,
+        },
+      },
+      metadata: {
+        cart_token: cart.cartToken || "",
+        shopify_line_items: JSON.stringify(cart.lineItems.map((li) => ({ variant_id: li.variant_id, quantity: li.quantity }))),
+        ...(cart.email ? { email: cart.email } : {}),
+      },
+    });
+
+    const addr = {
+      name: address.name || "",
+      line1: address.line1 || address.address1 || "",
+      line2: address.line2 || address.address2 || "",
+      city: address.city || "",
+      state: address.state || address.province || "",
+      postalCode: address.postalCode || address.zip || "",
+      country: "US",
+    };
+    cartByPlan.set(checkout.plan.id, {
+      ...cart,
+      subtotal,
+      amount: newAmount,
+      shipping: { title: chosen.title, price: Number(chosen.price), handle: chosen.handle },
+      address: addr,
+    });
+    persistCarts();
+
+    res.json({
+      plan: checkout.plan.id,
+      session: checkout.id,
+      amount: newAmount,
+      shipping: { title: chosen.title, price: Number(chosen.price) },
+    });
+  } catch (err) {
+    console.error("[/checkout/finalize]", err);
+    res.status(500).json({ error: "finalize failed" });
+  }
+});
+
+// ============================================================================
+// 1c) ON-DOMAIN CHECKOUT PAGE  (address+shipping step, then payment step)
 // ============================================================================
 app.get("/c", (req, res) => {
   const plan = String(req.query.plan || "");
   const session = String(req.query.session || "");
+  const step = String(req.query.step || "address") === "pay" ? "pay" : "address";
   const cart = cartByPlan.get(plan) || {};
-  const amount = cart.amount || 0;
+  const amount = Number(cart.amount) || 0;                 // pay step: incl. shipping
+  const subtotal = Number(cart.subtotal != null ? cart.subtotal : amount) || 0;
+  const shipping = cart.shipping || null;                  // {title, price} at pay step
+  const addr = cart.address || null;
   const items = Array.isArray(cart.lineItems) ? cart.lineItems : [];
   const esc = (s) => String(s == null ? "" : s).replace(/[&<>"']/g, (c) =>
     ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
   const money = (n) => "$" + (Number(n) || 0).toFixed(2);
   const US_STATES = { AL:"Alabama",AK:"Alaska",AZ:"Arizona",AR:"Arkansas",CA:"California",CO:"Colorado",CT:"Connecticut",DE:"Delaware",DC:"District of Columbia",FL:"Florida",GA:"Georgia",HI:"Hawaii",ID:"Idaho",IL:"Illinois",IN:"Indiana",IA:"Iowa",KS:"Kansas",KY:"Kentucky",LA:"Louisiana",ME:"Maine",MD:"Maryland",MA:"Massachusetts",MI:"Michigan",MN:"Minnesota",MS:"Mississippi",MO:"Missouri",MT:"Montana",NE:"Nebraska",NV:"Nevada",NH:"New Hampshire",NJ:"New Jersey",NM:"New Mexico",NY:"New York",NC:"North Carolina",ND:"North Dakota",OH:"Ohio",OK:"Oklahoma",OR:"Oregon",PA:"Pennsylvania",RI:"Rhode Island",SC:"South Carolina",SD:"South Dakota",TN:"Tennessee",TX:"Texas",UT:"Utah",VT:"Vermont",VA:"Virginia",WA:"Washington",WV:"West Virginia",WI:"Wisconsin",WY:"Wyoming" };
-  const stateOptions = Object.keys(US_STATES).map((c) => `<option value="${c}">${US_STATES[c]}</option>`).join("");
+  const stateOptions = (sel) => Object.keys(US_STATES).map((c) => `<option value="${c}"${sel === c ? " selected" : ""}>${US_STATES[c]}</option>`).join("");
   let savings = 0;
   const itemsHtml = items.map((it) => {
     const qty = Number(it.quantity) || 1;
@@ -192,13 +311,15 @@ app.get("/c", (req, res) => {
       : `<div class="os-price">${money(line)}</div>`;
     return `<div class="os-item"><div class="os-thumb">${img}<span class="os-qty">${qty}</span></div>` +
       `<div class="os-name">${esc(it.title || "Item")}</div>` + priceCell + `</div>`;
-  }).join("") || `<div class="os-item"><div class="os-name">Your order</div><div class="os-price">${money(amount)}</div></div>`;
+  }).join("") || `<div class="os-item"><div class="os-name">Your order</div><div class="os-price">${money(subtotal)}</div></div>`;
   savings = Math.round(savings * 100) / 100;
-  const regularTotal = amount + savings;
+
   const pixel = META_PIXEL_ID
-    ? `<script>!function(f,b,e,v,n,t,s){if(f.fbq)return;n=f.fbq=function(){n.callMethod?n.callMethod.apply(n,arguments):n.queue.push(arguments)};if(!f._fbq)f._fbq=n;n.push=n;n.loaded=!0;n.version='2.0';n.queue=[];t=b.createElement(e);t.async=!0;t.src=v;s=b.getElementsByTagName(e)[0];s.parentNode.insertBefore(t,s)}(window,document,'script','https://connect.facebook.net/en_US/fbevents.js');fbq('init','${META_PIXEL_ID}');fbq('track','PageView');fbq('track','InitiateCheckout',{value:${amount},currency:'USD'});</script>`
+    ? `<script>!function(f,b,e,v,n,t,s){if(f.fbq)return;n=f.fbq=function(){n.callMethod?n.callMethod.apply(n,arguments):n.queue.push(arguments)};if(!f._fbq)f._fbq=n;n.push=n;n.loaded=!0;n.version='2.0';n.queue=[];t=b.createElement(e);t.async=!0;t.src=v;s=b.getElementsByTagName(e)[0];s.parentNode.insertBefore(t,s)}(window,document,'script','https://connect.facebook.net/en_US/fbevents.js');fbq('init','${META_PIXEL_ID}');fbq('track','PageView');${step === "address" ? `fbq('track','InitiateCheckout',{value:${subtotal},currency:'USD'});` : ""}</script>`
     : "";
-  res.set("Content-Type", "text/html").send(`<!doctype html><html lang="en"><head>
+
+  // ---- shared chrome (head + styles + header) ----
+  const head = `<!doctype html><html lang="en"><head>
 <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Secure Checkout — ${esc(BRAND_NAME)}</title>
 <script async defer src="https://js.whop.com/static/checkout/loader.js"></script>${pixel}
@@ -216,9 +337,9 @@ a{color:inherit}
 .col-side{flex:.85;background:#fafbfc;border-left:1px solid #e6e6e6}
 .col-main>.inner{width:100%;max-width:560px;padding:30px 44px 56px 24px}
 .col-side>.inner{width:100%;max-width:430px;padding:34px 24px 56px 44px;position:sticky;top:0}
-#whop-embedded-checkout{min-height:380px}
-#placeOrder{width:100%;padding:15px;border:0;border-radius:8px;background:${BRAND_ACCENT};color:#fff;font-size:16px;font-weight:600;cursor:pointer;margin-top:14px;transition:opacity .15s}
-#placeOrder:hover{opacity:.88}#placeOrder:disabled{opacity:.45;cursor:default}
+#whop-embedded-checkout{min-height:300px}
+.cta{width:100%;padding:15px;border:0;border-radius:8px;background:${BRAND_ACCENT};color:#fff;font-size:16px;font-weight:600;cursor:pointer;margin-top:14px;transition:opacity .15s}
+.cta:hover{opacity:.88}.cta:disabled{opacity:.45;cursor:default}
 .trust{text-align:center;color:#8a8a8a;font-size:12.5px;margin-top:16px;line-height:1.7}
 .trust b{color:#5a5a5a;font-weight:600}
 .shipform{margin-bottom:6px}
@@ -232,6 +353,21 @@ a{color:inherit}
 .sf-err{color:#c0392b;font-size:13px;margin:-2px 0 8px;display:none}
 .shipform.invalid .sf-err{display:block}
 .shipform.invalid .sf-in.bad{border-color:#c0392b;box-shadow:0 0 0 1px #c0392b}
+.sec-h{font-size:15px;font-weight:600;margin:22px 0 12px;color:#1a1a1a}
+.ship-methods{margin:4px 0 2px}
+.ship-opt{display:flex;align-items:center;gap:11px;border:1px solid #cdcdcd;border-radius:8px;padding:13px 14px;margin-bottom:10px;cursor:pointer;transition:border-color .12s,box-shadow .12s}
+.ship-opt:hover{border-color:#9aa4b8}
+.ship-opt.sel{border-color:#16264a;box-shadow:0 0 0 1px #16264a;background:#f7f9fc}
+.ship-opt input{accent-color:#16264a;width:17px;height:17px;margin:0}
+.ship-opt .so-t{flex:1;font-size:14.5px;font-weight:500;color:#1a1a1a}
+.ship-opt .so-p{font-size:14.5px;font-weight:600;color:#1a1a1a}
+.ship-note{font-size:13.5px;color:#8a8a8a;padding:9px 2px}
+.shipto{border:1px solid #e6e6e6;border-radius:9px;padding:14px 16px;margin:2px 0 16px;font-size:14px;line-height:1.5;color:#333}
+.shipto .st-row{display:flex;justify-content:space-between;gap:12px;padding:9px 0;border-bottom:1px solid #f0f0f0}
+.shipto .st-row:last-child{border-bottom:0;padding-bottom:0}.shipto .st-row:first-child{padding-top:0}
+.shipto .st-lbl{color:#8a8a8a;flex:0 0 64px}
+.shipto .st-val{text-align:right;color:#1a1a1a;flex:1}
+.shipto .st-edit{color:#16264a;font-weight:600;cursor:pointer;font-size:13px;text-decoration:none;white-space:nowrap}
 .sf-paylabel{font-size:15px;font-weight:600;margin:14px 0 12px;color:#1a1a1a}
 .os-h{font-size:13px;font-weight:600;text-transform:uppercase;letter-spacing:.04em;color:#8a8a8a;margin:0 0 18px}
 .os-item{display:flex;align-items:center;gap:14px;margin-bottom:18px}
@@ -270,7 +406,80 @@ a{color:inherit}
 </style>
 </head><body>
 <div id="checkout-root">
-  <header class="hdr"><div class="hdr-in">${BRAND_LOGO_URL ? `<img src="${esc(BRAND_LOGO_URL)}" alt="${esc(BRAND_NAME)}" class="logo-img">` : `<span class="logo">${esc(BRAND_NAME)}<span class="tm">™</span></span>`}</div></header>
+  <header class="hdr"><div class="hdr-in">${BRAND_LOGO_URL ? `<img src="${esc(BRAND_LOGO_URL)}" alt="${esc(BRAND_NAME)}" class="logo-img">` : `<span class="logo">${esc(BRAND_NAME)}<span class="tm">™</span></span>`}</div></header>`;
+
+  const savingsHtml = savings > 0.001
+    ? `<div class="os-savings"><span class="os-savings-tag">🏷️ TOTAL SAVINGS</span><span>${money(savings)}</span></div>`
+    : "";
+  const badges = `<div class="badges"><span>🇺🇸 Made in USA</span><span>✓ GMP Certified</span><span>✓ 90-Day Money-Back</span></div>`;
+
+  if (step === "pay") {
+    // ---------- PAYMENT STEP ----------
+    const shipTitle = shipping ? shipping.title : "Shipping";
+    const shipPrice = shipping ? Number(shipping.price) : 0;
+    const summary = `
+      <button type="button" class="os-toggle" onclick="this.closest('.col-side').classList.toggle('open')"><span class="os-toggle-l">Order summary <span class="chev">⌄</span></span><span class="os-toggle-r">${money(amount)}</span></button>
+      <div class="os-body">
+      <h2 class="os-h">Order summary</h2>
+      <div class="os-items">${itemsHtml}</div>
+      <div class="os-rows">
+        <div class="os-row"><span>Subtotal</span><span>${money(subtotal)}</span></div>
+        <div class="os-row"><span>Shipping${shipTitle ? " &middot; " + esc(shipTitle) : ""}</span><span${shipPrice === 0 ? ' class="os-free"' : ""}>${shipPrice === 0 ? "FREE" : money(shipPrice)}</span></div>
+      </div>
+      <div class="os-total"><span>Total</span><span><span class="os-cur">USD</span>${money(amount)}</span></div>
+      ${savingsHtml}
+      ${badges}
+      </div>`;
+    const addrLine = addr
+      ? `${esc(addr.line1)}${addr.line2 ? ", " + esc(addr.line2) : ""}, ${esc(addr.city)}, ${esc(addr.state)} ${esc(addr.postalCode)}`
+      : "";
+    res.set("Content-Type", "text/html").send(`${head}
+  <div class="page">
+    <main class="col-main"><div class="inner">
+      <div class="shipto">
+        <div class="st-row"><span class="st-lbl">Ship to</span><span class="st-val">${esc(addr ? addr.name : "")}${addr ? "<br>" + addrLine : ""}</span><a class="st-edit" href="javascript:history.back()">Edit</a></div>
+        <div class="st-row"><span class="st-lbl">Method</span><span class="st-val">${esc(shipTitle)} — ${shipPrice === 0 ? "FREE" : money(shipPrice)}</span></div>
+      </div>
+      <div class="sf-paylabel">Contact &amp; payment</div>
+      <div id="whop-embedded-checkout" data-whop-checkout-plan-id="${plan}"${session ? ` data-whop-checkout-session="${session}"` : ""} data-whop-checkout-theme="light" data-whop-checkout-hide-address="true" data-whop-checkout-style-container-padding-x="0" data-whop-checkout-style-container-padding-top="0" data-whop-checkout-return-url="${HOST_URL}/thanks" data-whop-checkout-hide-submit-button="true" data-whop-checkout-on-state-change="onWhopState" data-whop-checkout-on-complete="onWhopComplete"></div>
+      <button id="placeOrder" class="cta" disabled>Place Order &middot; ${money(amount)}</button>
+      <div class="trust">🔒 <b>Secure SSL checkout</b> — your info is encrypted &amp; never stored.</div>
+    </div></main>
+    <aside class="col-side"><div class="inner">${summary}</div></aside>
+  </div>
+</div>
+<script>
+var btn=document.getElementById('placeOrder');
+btn.addEventListener('click',function(){
+  btn.disabled=true;btn.textContent='Processing…';
+  try{wco.submit('whop-embedded-checkout')}catch(e){console.error(e);btn.disabled=false;btn.textContent='Place Order · ${money(amount)}';}
+});
+window.onWhopState=function(state){try{if(state==='ready'){btn.disabled=false;}else if(state==='disabled'){btn.disabled=true;}}catch(e){}};
+window.onWhopComplete=async function(planId,receiptId){
+  try{${META_PIXEL_ID ? `fbq('track','Purchase',{value:${amount},currency:'USD'});` : ""}}catch(e){}
+  try{await fetch('${HOST_URL}/order-complete',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({planId:planId||'${plan}',receiptId:receiptId})})}catch(e){}
+  document.getElementById('checkout-root').innerHTML='<div style="max-width:520px;margin:80px auto;padding:0 24px;text-align:center"><div style="font-size:54px;line-height:1">✅</div><h1 style="font-size:24px;margin:14px 0 8px">Order confirmed</h1><p style="color:#555;font-size:15px;line-height:1.6">Thank you for your order! It\\'s on its way and a confirmation email is in your inbox.</p></div>';
+};
+</script>
+</body></html>`);
+    return;
+  }
+
+  // ---------- ADDRESS + SHIPPING STEP ----------
+  const summary = `
+      <button type="button" class="os-toggle" onclick="this.closest('.col-side').classList.toggle('open')"><span class="os-toggle-l">Order summary <span class="chev">⌄</span></span><span class="os-toggle-r" id="toggleTotal">${money(subtotal)}</span></button>
+      <div class="os-body">
+      <h2 class="os-h">Order summary</h2>
+      <div class="os-items">${itemsHtml}</div>
+      <div class="os-rows">
+        <div class="os-row"><span>Subtotal</span><span>${money(subtotal)}</span></div>
+        <div class="os-row"><span>Shipping</span><span id="sumShip">Enter address</span></div>
+      </div>
+      <div class="os-total"><span>Total</span><span><span class="os-cur">USD</span><span id="sumTotal">${money(subtotal)}</span></span></div>
+      ${savingsHtml}
+      ${badges}
+      </div>`;
+  res.set("Content-Type", "text/html").send(`${head}
   <div class="page">
     <main class="col-main"><div class="inner">
       <form id="shipForm" class="shipform" onsubmit="return false">
@@ -280,62 +489,98 @@ a{color:inherit}
         <input class="sf-in" id="sf_line2" placeholder="Apartment, suite, etc. (optional)" autocomplete="address-line2">
         <div class="sf-row">
           <input class="sf-in" id="sf_city" placeholder="City" autocomplete="address-level2">
-          <select class="sf-in sf-country" id="sf_state" autocomplete="address-level1"><option value="" selected disabled>State</option>${stateOptions}</select>
+          <select class="sf-in sf-country" id="sf_state" autocomplete="address-level1"><option value="" selected disabled>State</option>${stateOptions("")}</select>
           <input class="sf-in" id="sf_zip" placeholder="ZIP code" autocomplete="postal-code" inputmode="numeric">
         </div>
         <select class="sf-in sf-country" id="sf_country" autocomplete="country"><option value="US" selected>United States</option></select>
         <div id="sf_err" class="sf-err">Please complete your shipping address above.</div>
       </form>
-      <div class="sf-paylabel">Contact &amp; payment</div>
-      <div id="whop-embedded-checkout" data-whop-checkout-plan-id="${plan}"${session ? ` data-whop-checkout-session="${session}"` : ""} data-whop-checkout-theme="light" data-whop-checkout-hide-address="true" data-whop-checkout-style-container-padding-x="0" data-whop-checkout-style-container-padding-top="0" data-whop-checkout-return-url="${HOST_URL}/thanks" data-whop-checkout-hide-submit-button="true" data-whop-checkout-on-state-change="onWhopState" data-whop-checkout-on-complete="onWhopComplete"></div>
-      <button id="placeOrder" disabled>Place Order &middot; ${money(amount)}</button>
+      <h2 class="sec-h">Shipping method</h2>
+      <div id="shipMethods" class="ship-methods"><div class="ship-note">Enter your shipping address to see available shipping methods.</div></div>
+      <button id="continueBtn" class="cta" disabled>Continue to payment</button>
       <div class="trust">🔒 <b>Secure SSL checkout</b> — your info is encrypted &amp; never stored.</div>
     </div></main>
-    <aside class="col-side"><div class="inner">
-      <button type="button" class="os-toggle" onclick="this.closest('.col-side').classList.toggle('open')"><span class="os-toggle-l">Order summary <span class="chev">⌄</span></span><span class="os-toggle-r">${money(amount)}</span></button>
-      <div class="os-body">
-      <h2 class="os-h">Order summary</h2>
-      <div class="os-items">${itemsHtml}</div>
-      <div class="os-rows">
-        <div class="os-row"><span>Subtotal</span><span>${money(amount)}</span></div>
-        <div class="os-row"><span>Shipping</span><span class="os-free">FREE</span></div>
-      </div>
-      <div class="os-total"><span>Total</span><span><span class="os-cur">USD</span>${money(amount)}</span></div>
-      ${savings > 0.001 ? `<div class="os-savings"><span class="os-savings-tag">🏷️ TOTAL SAVINGS</span><span>${money(savings)}</span></div>` : ""}
-      <div class="badges"><span>🇺🇸 Made in USA</span><span>✓ GMP Certified</span><span>✓ 90-Day Money-Back</span></div>
-      </div>
-    </div></aside>
+    <aside class="col-side"><div class="inner">${summary}</div></aside>
   </div>
 </div>
 <script>
-var btn=document.getElementById('placeOrder');
+var btn=document.getElementById('continueBtn');
 var form=document.getElementById('shipForm');
-var capturedAddress=null;
+var box=document.getElementById('shipMethods');
 var REQ=['sf_name','sf_line1','sf_city','sf_state','sf_zip'];
+var rates=[], selIdx=-1, ratesKey='', ratesLoading=false;
+var SUBTOTAL=${subtotal};
 function gv(id){var el=document.getElementById(id);return el?el.value.trim():'';}
-function readShip(){return {name:gv('sf_name'),country:gv('sf_country')||'US',line1:gv('sf_line1'),line2:gv('sf_line2'),city:gv('sf_city'),state:gv('sf_state'),postalCode:gv('sf_zip')};}
+function readShip(){return {name:gv('sf_name'),country:'US',line1:gv('sf_line1'),line2:gv('sf_line2'),city:gv('sf_city'),state:gv('sf_state'),postalCode:gv('sf_zip')};}
 function validShip(){var ok=true;REQ.forEach(function(id){var el=document.getElementById(id);if(el){if(!el.value.trim()){el.classList.add('bad');ok=false;}else{el.classList.remove('bad');}}});form.classList.toggle('invalid',!ok);return ok;}
-REQ.forEach(function(id){var el=document.getElementById(id);if(el){var clr=function(){el.classList.remove('bad');if(!form.querySelector('.bad'))form.classList.remove('invalid');};el.addEventListener('input',clr);el.addEventListener('change',clr);}});
+function money(n){return '$'+(Number(n)||0).toFixed(2);}
+function updateSummary(){
+  var ship = selIdx>=0 ? rates[selIdx].price : null;
+  var shipCell=document.getElementById('sumShip');
+  var totalCell=document.getElementById('sumTotal');
+  var toggleR=document.getElementById('toggleTotal');
+  if(ship==null){ if(shipCell){shipCell.textContent='Enter address';shipCell.className='';} }
+  else if(shipCell){ shipCell.textContent = ship===0?'FREE':money(ship); shipCell.className = ship===0?'os-free':''; }
+  var tot = SUBTOTAL + (ship||0);
+  if(totalCell)totalCell.textContent=money(tot);
+  if(toggleR)toggleR.textContent=money(tot);
+}
+function updateContinue(){ btn.disabled = !(validShip() && rates.length>0 && selIdx>=0 && !ratesLoading); }
+function renderRates(list){
+  rates=list||[]; selIdx = rates.length?0:-1;
+  if(!rates.length){ box.innerHTML='<div class="ship-note">No shipping options are available for this address.</div>'; updateSummary(); updateContinue(); return; }
+  var html='';
+  rates.forEach(function(r,i){
+    html += '<label class="ship-opt'+(i===0?' sel':'')+'" data-i="'+i+'"><input type="radio" name="shipopt" '+(i===0?'checked':'')+'><span class="so-t">'+r.title+'</span><span class="so-p">'+(r.price===0?'FREE':money(r.price))+'</span></label>';
+  });
+  box.innerHTML=html;
+  [].forEach.call(box.querySelectorAll('.ship-opt'),function(el){
+    el.addEventListener('click',function(){
+      selIdx=parseInt(el.getAttribute('data-i'),10);
+      [].forEach.call(box.querySelectorAll('.ship-opt'),function(o){o.classList.remove('sel');});
+      el.classList.add('sel'); var radio=el.querySelector('input'); if(radio)radio.checked=true;
+      updateSummary(); updateContinue();
+    });
+  });
+  updateSummary(); updateContinue();
+}
+async function fetchRates(){
+  if(!validShip()){ box.innerHTML='<div class="ship-note">Enter your shipping address to see available shipping methods.</div>'; rates=[];selIdx=-1; updateSummary(); updateContinue(); return; }
+  var addr=readShip();
+  var key=[addr.line1,addr.city,addr.state,addr.postalCode].join('|');
+  if(key===ratesKey && rates.length){ updateContinue(); return; }
+  ratesKey=key; ratesLoading=true; updateContinue();
+  box.innerHTML='<div class="ship-note">Calculating shipping…</div>';
+  try{
+    var r=await fetch('${HOST_URL}/shipping/rates',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({plan:'${plan}',address:addr})}).then(function(x){return x.json();});
+    ratesLoading=false;
+    if(key!==ratesKey) return;            // a newer request superseded this one
+    renderRates(r.rates||[]);
+  }catch(e){ ratesLoading=false; box.innerHTML='<div class="ship-note">Could not load shipping — please re-check your address.</div>'; updateContinue(); }
+}
+var deb;
+REQ.concat(['sf_line2']).forEach(function(id){var el=document.getElementById(id);if(el){
+  el.addEventListener('input',function(){el.classList.remove('bad');if(!form.querySelector('.bad'))form.classList.remove('invalid');clearTimeout(deb);deb=setTimeout(fetchRates,500);updateContinue();});
+  el.addEventListener('change',function(){clearTimeout(deb);fetchRates();});
+}});
 btn.addEventListener('click',async function(){
   if(!validShip()){var b=form.querySelector('.bad');if(b)b.focus();return;}
-  capturedAddress=readShip();
-  btn.disabled=true;btn.textContent='Processing…';
-  try{await wco.setAddress('whop-embedded-checkout',capturedAddress);}catch(e){console.warn('setAddress',e);}
-  try{wco.submit('whop-embedded-checkout')}catch(e){console.error(e);btn.disabled=false;btn.textContent='Place Order · ${money(amount)}';}
+  if(selIdx<0||!rates.length){fetchRates();return;}
+  btn.disabled=true;btn.textContent='Loading payment…';
+  var addr=readShip();
+  try{
+    var resp=await fetch('${HOST_URL}/checkout/finalize',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({plan:'${plan}',address:addr,handle:rates[selIdx].handle,title:rates[selIdx].title})}).then(function(x){return x.json();});
+    if(!resp||!resp.plan)throw new Error('finalize');
+    window.location.href='${HOST_URL}/c?plan='+encodeURIComponent(resp.plan)+'&session='+encodeURIComponent(resp.session||'')+'&step=pay';
+  }catch(e){ btn.disabled=false; btn.textContent='Continue to payment'; alert('Sorry — could not load payment. Please try again.'); }
 });
-window.onWhopState=function(state){try{if(state==='ready'){btn.disabled=false;}else if(state==='disabled'){btn.disabled=true;}}catch(e){}};
-window.onWhopComplete=async function(planId,receiptId){
-  try{${META_PIXEL_ID ? `fbq('track','Purchase',{value:${amount},currency:'USD'});` : ""}}catch(e){}
-  var address=capturedAddress||readShip();
-  try{await fetch('${HOST_URL}/order-complete',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({planId:planId||'${plan}',receiptId:receiptId,address:address})})}catch(e){}
-  document.getElementById('checkout-root').innerHTML='<div style="max-width:520px;margin:80px auto;padding:0 24px;text-align:center"><div style="font-size:54px;line-height:1">✅</div><h1 style="font-size:24px;margin:14px 0 8px">Order confirmed</h1><p style="color:#555;font-size:15px;line-height:1.6">Thank you for your order! It\\'s on its way and a confirmation email is in your inbox.</p></div>';
-};
+updateSummary(); updateContinue();
 </script>
 </body></html>`);
 });
 
-// On completion the page posts here WITH the shipping address -> create the
-// paid Shopify order (with address) and fire Meta server-side.
+// On completion the page posts here -> create the paid Shopify order (with the
+// stored shipping address + shipping line) and fire Meta server-side.
 app.post("/order-complete", express.json(), async (req, res) => {
   const { planId, receiptId, address } = req.body || {};
   if (!planId) return res.status(400).json({ error: "missing plan" });
@@ -343,13 +588,14 @@ app.post("/order-complete", express.json(), async (req, res) => {
   const cart = cartByPlan.get(planId) || {};
   const lineItems = cart.lineItems || [];
   if (!lineItems.length) { console.error("[order-complete] no cart for", planId); return res.status(404).json({ error: "no cart" }); }
+  const ship = cart.address || address || {};
   processedPayments.add(planId); // claim; released below if the order fails
   try {
     await createShopifyOrder({
       payment: { id: receiptId || planId, amount: cart.amount },
-      lineItems, email: cart.email, ship: address || {},
+      lineItems, email: cart.email, ship, shipping: cart.shipping || null,
     });
-    fireMetaPurchase({ value: cart.amount, email: cart.email, address }).catch((e) => console.error("[meta]", e));
+    fireMetaPurchase({ value: cart.amount, email: cart.email, address: ship }).catch((e) => console.error("[meta]", e));
     res.json({ ok: true });
   } catch (err) {
     processedPayments.delete(planId); // release so the webhook fallback / a retry can recover
@@ -365,7 +611,7 @@ async function fireMetaPurchase({ value, email, address }) {
   const user_data = {};
   if (email) user_data.em = [h(email)];
   if (address && address.city) user_data.ct = [h(address.city)];
-  if (address && address.postalCode) user_data.zp = [h(address.postalCode)];
+  if (address && (address.postalCode || address.zip)) user_data.zp = [h(address.postalCode || address.zip)];
   const body = { data: [{ event_name: "Purchase", event_time: Math.floor(Date.now() / 1000),
     action_source: "website", user_data, custom_data: { currency: "usd", value: Number(value) || 0 } }] };
   const r = await fetch(`https://graph.facebook.com/v19.0/${META_PIXEL_ID}/events?access_token=${META_CAPI_TOKEN}`,
@@ -386,20 +632,14 @@ app.post("/webhooks/whop", express.text({ type: "*/*" }), async (req, res) => {
   }
   res.sendStatus(200); // ack fast so Whop doesn't retry
 
-  // The SDK delivers event.type in DOT notation ("invoice.paid",
-  // "membership.activated") — NOT the underscore names shown in the dashboard.
-  // Log the full payload of every event so we can confirm the field shapes.
   console.log("[webhook] type:", event.type, "| data:", JSON.stringify(event.data));
   const ORDER_TRIGGERS = new Set(["invoice.paid", "membership.activated", "payment.succeeded"]);
   if (!ORDER_TRIGGERS.has(event.type)) return;
   const payment = event.data || {};
-  // Correlate the cart ourselves via the unique plan id. This also de-dupes
-  // invoice.paid + membership.activated for the SAME purchase down to one order.
   const planId = payment.plan && payment.plan.id;
   const dedupeKey = planId || payment.id;
-  // Give the on-page /order-complete (which carries the shipping address) a head
-  // start to win this purchase, so the order is created WITH the address. The
-  // webhook is the fallback for buyers who close the tab before it fires.
+  // Give the on-page /order-complete a head start so the order is created from
+  // our stored cart (with shipping + address). The webhook is the fallback.
   await new Promise((r) => setTimeout(r, 8000));
   if (dedupeKey && processedPayments.has(dedupeKey)) return;
   if (dedupeKey) processedPayments.add(dedupeKey);
@@ -409,25 +649,26 @@ app.post("/webhooks/whop", express.text({ type: "*/*" }), async (req, res) => {
     const meta = payment.metadata || {};
     const lineItems = stored.lineItems || JSON.parse(meta.shopify_line_items || "[]");
     const email = (payment.user && payment.user.email) || stored.email || meta.email;
-    const ship = payment.shipping_address || payment.address || {}; // empty on membership.activated
+    const ship = stored.address || payment.shipping_address || payment.address || {};
     if (!lineItems.length) { console.error("[webhook] no cart on file for plan", planId); return; }
     const amount = Number(payment && payment.amount) > 0 ? Number(payment.amount) : stored.amount;
-    await createShopifyOrder({ payment: { id: payment.id, amount }, lineItems, email, ship });
+    await createShopifyOrder({ payment: { id: payment.id, amount }, lineItems, email, ship, shipping: stored.shipping || null });
   } catch (err) {
     console.error("[webhook] Shopify order failed", err);
     if (dedupeKey) processedPayments.delete(dedupeKey); // release so /order-complete or a retry can recover
   }
 });
 
-async function createShopifyOrder({ payment, lineItems, email, ship }) {
+async function createShopifyOrder({ payment, lineItems, email, ship, shipping }) {
   if (!shopifyToken) throw new Error("No Shopify token yet — visit HOST_URL/auth once.");
   const hasAddr = ship && (ship.line1 || ship.address1);
+  const shipPrice = shipping && Number(shipping.price) > 0 ? Math.round(Number(shipping.price) * 100) / 100 : 0;
   // Whop's membership.activated webhook sends amount 0, which Shopify rejects
-  // ("Amount must be greater than zero for sale transaction"). Fall back to the
-  // cart's line-item total so the transaction always carries a real amount.
+  // ("Amount must be greater than zero"). Fall back to the cart's line-item
+  // total + shipping so the transaction always carries the real amount.
   let txAmount = Number(payment && (payment.amount ?? payment.final_amount));
   if (!(txAmount > 0)) {
-    txAmount = lineItems.reduce((s, li) => s + (Number(li.price) || 0) * (Number(li.quantity) || 1), 0);
+    txAmount = lineItems.reduce((s, li) => s + (Number(li.price) || 0) * (Number(li.quantity) || 1), 0) + shipPrice;
   }
   txAmount = Math.round((Number(txAmount) || 0) * 100) / 100;
   const order = {
@@ -444,6 +685,12 @@ async function createShopifyOrder({ payment, lineItems, email, ship }) {
       transactions: txAmount > 0
         ? [{ kind: "sale", status: "success", gateway: "Whop", amount: txAmount }]
         : undefined,
+      shipping_lines: shipping ? [{
+        title: shipping.title || "Shipping",
+        price: shipPrice.toFixed(2),
+        code: shipping.title || "Shipping",
+        source: "Whop",
+      }] : undefined,
       shipping_address: hasAddr ? {
         name: ship.name,
         address1: ship.line1 || ship.address1,
@@ -456,7 +703,7 @@ async function createShopifyOrder({ payment, lineItems, email, ship }) {
     },
   };
   const r = await shopifyAdmin("/orders.json", "POST", order);
-  console.log("[shopify] order created:", r.order?.name);
+  console.log("[shopify] order created:", r.order?.name, "| shipping:", shipping ? `${shipping.title} ${shipPrice}` : "none");
 }
 
 // Look up compare-at (original) prices for the cart's variants straight from
@@ -555,8 +802,7 @@ app.get("/thanks", (req, res) => {
 });
 
 // Apple Pay domain verification (self-hosted) — proxy Whop's association file so
-// Apple sees it at our domain, with zero downtime and no DNS repointing. Stays in
-// sync automatically if Whop rotates the file.
+// Apple sees it at our domain, with zero downtime and no DNS repointing.
 app.get("/.well-known/apple-developer-merchantid-domain-association", async (_req, res) => {
   try {
     const r = await fetch("https://whop.com/.well-known/apple-platform-integrator/apple-developer-merchantid-domain-association/");
