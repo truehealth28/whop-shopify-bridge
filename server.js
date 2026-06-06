@@ -782,10 +782,14 @@ async function shopifyAdmin(path, method, body) {
 app.get("/auth", (req, res) => {
   const state = crypto.randomBytes(16).toString("hex");
   const redirectUri = `${HOST_URL}/auth/callback`;
+  // Request the full scope set incl. write_draft_orders (needed for live
+  // shipping-rate lookups via draftOrderCalculate). Hardcoded so it's correct
+  // regardless of any SHOPIFY_SCOPES env override.
+  const authScopes = "write_orders,read_orders,read_products,write_draft_orders";
   const url =
     `https://${SHOPIFY_STORE}/admin/oauth/authorize` +
     `?client_id=${SHOPIFY_API_KEY}` +
-    `&scope=${encodeURIComponent(SHOPIFY_SCOPES)}` +
+    `&scope=${encodeURIComponent(authScopes)}` +
     `&redirect_uri=${encodeURIComponent(redirectUri)}` +
     `&state=${state}` +
     `&grant_options[]=`; // offline (permanent) token
