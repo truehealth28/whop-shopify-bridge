@@ -129,7 +129,13 @@ app.post("/checkout/create", express.json(), async (req, res) => {
     // Remember this cart so the webhook can rebuild the Shopify order later,
     // keyed by the unique plan id (Whop doesn't pass our metadata to the webhook).
     cartByPlan.set(checkout.plan.id, {
-      lineItems: items.map((it) => ({ variant_id: it.variantId, quantity: it.quantity || 1 })),
+      lineItems: items.map((it) => ({
+        variant_id: it.variantId,
+        quantity: it.quantity || 1,
+        title: it.title || "",
+        price: Number(it.price) || 0,
+        image: it.image || "",
+      })),
       cartToken: cartToken || "",
       email: email || null,
       amount: Number(total.toFixed(2)),
@@ -156,34 +162,100 @@ app.get("/c", (req, res) => {
   const session = String(req.query.session || "");
   const cart = cartByPlan.get(plan) || {};
   const amount = cart.amount || 0;
+  const items = Array.isArray(cart.lineItems) ? cart.lineItems : [];
+  const esc = (s) => String(s == null ? "" : s).replace(/[&<>"']/g, (c) =>
+    ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+  const money = (n) => "$" + (Number(n) || 0).toFixed(2);
+  const itemsHtml = items.map((it) => {
+    const qty = Number(it.quantity) || 1;
+    const line = (Number(it.price) || 0) * qty;
+    const img = it.image
+      ? `<img src="${esc(it.image)}" alt="" class="os-img">`
+      : `<div class="os-img os-img--ph"></div>`;
+    return `<div class="os-item"><div class="os-thumb">${img}<span class="os-qty">${qty}</span></div>` +
+      `<div class="os-name">${esc(it.title || "Item")}</div>` +
+      `<div class="os-price">${money(line)}</div></div>`;
+  }).join("") || `<div class="os-item"><div class="os-name">Your order</div><div class="os-price">${money(amount)}</div></div>`;
   const pixel = META_PIXEL_ID
     ? `<script>!function(f,b,e,v,n,t,s){if(f.fbq)return;n=f.fbq=function(){n.callMethod?n.callMethod.apply(n,arguments):n.queue.push(arguments)};if(!f._fbq)f._fbq=n;n.push=n;n.loaded=!0;n.version='2.0';n.queue=[];t=b.createElement(e);t.async=!0;t.src=v;s=b.getElementsByTagName(e)[0];s.parentNode.insertBefore(t,s)}(window,document,'script','https://connect.facebook.net/en_US/fbevents.js');fbq('init','${META_PIXEL_ID}');fbq('track','PageView');fbq('track','InitiateCheckout',{value:${amount},currency:'USD'});</script>`
     : "";
-  res.set("Content-Type", "text/html").send(`<!doctype html><html><head>
+  res.set("Content-Type", "text/html").send(`<!doctype html><html lang="en"><head>
 <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Secure Checkout — ${BRAND_NAME}</title>
+<title>Secure Checkout — ${esc(BRAND_NAME)}</title>
 <script async defer src="https://js.whop.com/static/checkout/loader.js"></script>${pixel}
-<style>body{font-family:system-ui,-apple-system,Segoe UI,sans-serif;margin:0;background:#f7f7f8;color:#111}
-.wrap{max-width:540px;margin:0 auto;padding:20px}.bar{font-weight:700;font-size:18px;padding:8px 0 16px}
-#placeOrder{width:100%;padding:16px;border:0;border-radius:10px;background:#111;color:#fff;font-size:17px;font-weight:600;cursor:pointer;margin-top:12px}
-.sec{text-align:center;color:#888;font-size:13px;margin-top:10px}</style>
-</head><body><div class="wrap">
-<div class="bar">${BRAND_NAME}</div>
-<div id="whop-embedded-checkout" data-whop-checkout-plan-id="${plan}"${session ? ` data-whop-checkout-session="${session}"` : ""} data-whop-checkout-return-url="${HOST_URL}/thanks" data-whop-checkout-hide-submit-button="true" data-whop-checkout-on-state-change="onWhopState" data-whop-checkout-on-complete="onWhopComplete"></div>
-<button id="placeOrder">Place Order &middot; $${amount.toFixed(2)}</button>
-<div class="sec">🔒 Secure checkout</div>
+<style>
+*{box-sizing:border-box}
+body{margin:0;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;color:#1a1a1a;background:#fff;-webkit-font-smoothing:antialiased}
+a{color:inherit}
+.hdr{border-bottom:1px solid #e6e6e6;background:#fff}
+.hdr-in{max-width:1000px;margin:0 auto;padding:22px 20px;text-align:center}
+.logo{font-size:24px;font-weight:800;letter-spacing:-.02em;color:#111}
+.tm{font-size:.55em;vertical-align:super;font-weight:600;margin-left:1px}
+.page{display:flex;align-items:stretch;min-height:calc(100vh - 67px)}
+.col-main{flex:1.15;display:flex;justify-content:flex-end;background:#fff}
+.col-side{flex:.85;background:#fafbfc;border-left:1px solid #e6e6e6}
+.col-main>.inner{width:100%;max-width:560px;padding:30px 44px 56px 24px}
+.col-side>.inner{width:100%;max-width:430px;padding:34px 24px 56px 44px;position:sticky;top:0}
+#whop-embedded-checkout{min-height:380px}
+#placeOrder{width:100%;padding:15px;border:0;border-radius:8px;background:#111;color:#fff;font-size:16px;font-weight:600;cursor:pointer;margin-top:14px;transition:opacity .15s}
+#placeOrder:hover{opacity:.88}#placeOrder:disabled{opacity:.45;cursor:default}
+.trust{text-align:center;color:#8a8a8a;font-size:12.5px;margin-top:16px;line-height:1.7}
+.trust b{color:#5a5a5a;font-weight:600}
+.os-h{font-size:13px;font-weight:600;text-transform:uppercase;letter-spacing:.04em;color:#8a8a8a;margin:0 0 18px}
+.os-item{display:flex;align-items:center;gap:14px;margin-bottom:18px}
+.os-thumb{position:relative;flex:0 0 auto}
+.os-img{width:58px;height:58px;border-radius:9px;object-fit:cover;border:1px solid #e2e2e2;background:#fff;display:block}
+.os-img--ph{background:linear-gradient(135deg,#eee,#e3e3e3)}
+.os-qty{position:absolute;top:-9px;right:-9px;min-width:21px;height:21px;padding:0 6px;background:#6b7280;color:#fff;border-radius:999px;font-size:12px;font-weight:600;display:flex;align-items:center;justify-content:center;box-shadow:0 1px 2px rgba(0,0,0,.2)}
+.os-name{flex:1;font-size:14px;font-weight:500;line-height:1.35;color:#222}
+.os-price{font-size:14px;font-weight:600;white-space:nowrap;color:#222}
+.os-rows{border-top:1px solid #e6e6e6;padding-top:18px;margin-top:6px}
+.os-row{display:flex;justify-content:space-between;font-size:14px;color:#555;margin-bottom:12px}
+.os-free{color:#1a7f37;font-weight:600}
+.os-total{display:flex;justify-content:space-between;align-items:baseline;border-top:1px solid #e6e6e6;padding-top:18px;margin-top:6px;font-size:21px;font-weight:700;color:#111}
+.os-cur{font-size:12px;color:#999;font-weight:600;margin-right:5px}
+.badges{margin-top:22px;padding-top:18px;border-top:1px solid #ededed;display:flex;flex-wrap:wrap;gap:10px 16px;font-size:12.5px;color:#777}
+.badges span{display:flex;align-items:center;gap:5px}
+@media(max-width:820px){
+  .page{flex-direction:column;min-height:0}
+  .col-main,.col-side{display:block;flex:none}
+  .col-main>.inner,.col-side>.inner{max-width:640px;margin:0 auto;padding:24px 20px;position:static}
+  .col-side{order:-1;border-left:0;border-bottom:1px solid #e6e6e6}
+}
+</style>
+</head><body>
+<div id="checkout-root">
+  <header class="hdr"><div class="hdr-in"><span class="logo">${esc(BRAND_NAME)}<span class="tm">™</span></span></div></header>
+  <div class="page">
+    <main class="col-main"><div class="inner">
+      <div id="whop-embedded-checkout" data-whop-checkout-plan-id="${plan}"${session ? ` data-whop-checkout-session="${session}"` : ""} data-whop-checkout-theme="light" data-whop-checkout-style-container-padding-x="0" data-whop-checkout-style-container-padding-top="0" data-whop-checkout-return-url="${HOST_URL}/thanks" data-whop-checkout-hide-submit-button="true" data-whop-checkout-on-state-change="onWhopState" data-whop-checkout-on-complete="onWhopComplete"></div>
+      <button id="placeOrder" disabled>Place Order &middot; ${money(amount)}</button>
+      <div class="trust">🔒 <b>Secure SSL checkout</b> — your info is encrypted &amp; never stored.</div>
+    </div></main>
+    <aside class="col-side"><div class="inner">
+      <h2 class="os-h">Order summary</h2>
+      <div class="os-items">${itemsHtml}</div>
+      <div class="os-rows">
+        <div class="os-row"><span>Subtotal</span><span>${money(amount)}</span></div>
+        <div class="os-row"><span>Shipping</span><span class="os-free">FREE</span></div>
+      </div>
+      <div class="os-total"><span>Total</span><span><span class="os-cur">USD</span>${money(amount)}</span></div>
+      <div class="badges"><span>🇺🇸 Made in USA</span><span>✓ GMP Certified</span><span>✓ 90-Day Money-Back</span></div>
+    </div></aside>
+  </div>
 </div>
 <script>
 var btn=document.getElementById('placeOrder');
-btn.addEventListener('click',function(){btn.disabled=true;btn.textContent='Processing…';try{wco.submit('whop-embedded-checkout')}catch(e){console.error(e);btn.disabled=false;btn.textContent='Place Order · $${amount.toFixed(2)}';}});
+btn.addEventListener('click',function(){btn.disabled=true;btn.textContent='Processing…';try{wco.submit('whop-embedded-checkout')}catch(e){console.error(e);btn.disabled=false;btn.textContent='Place Order · ${money(amount)}';}});
 window.onWhopState=function(state){try{if(state==='ready'){btn.disabled=false;}else if(state==='disabled'){btn.disabled=true;}}catch(e){}};
 window.onWhopComplete=async function(planId,receiptId){
   try{${META_PIXEL_ID ? `fbq('track','Purchase',{value:${amount},currency:'USD'});` : ""}}catch(e){}
   var address={};try{address=await wco.getAddress('whop-embedded-checkout')}catch(e){}
   try{await fetch('${HOST_URL}/order-complete',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({planId:planId||'${plan}',receiptId:receiptId,address:address})})}catch(e){}
-  document.querySelector('.wrap').innerHTML='<h2>✅ Order confirmed</h2><p>Thank you! Your order is on its way and a confirmation is in your inbox.</p>';
+  document.getElementById('checkout-root').innerHTML='<div style="max-width:520px;margin:80px auto;padding:0 24px;text-align:center"><div style="font-size:54px;line-height:1">✅</div><h1 style="font-size:24px;margin:14px 0 8px">Order confirmed</h1><p style="color:#555;font-size:15px;line-height:1.6">Thank you for your order! It\\'s on its way and a confirmation email is in your inbox.</p></div>';
 };
-</script></body></html>`);
+</script>
+</body></html>`);
 });
 
 // On completion the page posts here WITH the shipping address -> create the
