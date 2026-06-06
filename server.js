@@ -55,6 +55,7 @@ const whop = new Whop({
 // The Shopify Admin token. Either provided via env, or captured by /auth.
 let shopifyToken = SHOPIFY_ADMIN_TOKEN;
 const processedPayments = new Set(); // de-dupe webhook retries (use a DB in prod)
+const cartByPlan = new Map();        // planId -> cart  (Whop doesn't echo our metadata back)
 
 const app = express();
 app.use((req, res, next) => {
@@ -85,6 +86,7 @@ app.post("/checkout/create", express.json(), async (req, res) => {
         currency: "usd",
         initial_price: Number(total.toFixed(2)),
         plan_type: "one_time",
+        force_create_new_plan: true, // unique plan per cart, so the webhook can map it back
         // Attach to (or create) one physical product that collects shipping
         // and uses your own statement descriptor.
         product: {
@@ -101,6 +103,14 @@ app.post("/checkout/create", express.json(), async (req, res) => {
         ),
         ...(email ? { email } : {}),
       },
+    });
+
+    // Remember this cart so the webhook can rebuild the Shopify order later,
+    // keyed by the unique plan id (Whop doesn't pass our metadata to the webhook).
+    cartByPlan.set(checkout.plan.id, {
+      lineItems: items.map((it) => ({ variant_id: it.variantId, quantity: it.quantity || 1 })),
+      cartToken: cartToken || "",
+      email: email || null,
     });
 
     return res.json({
@@ -134,18 +144,20 @@ app.post("/webhooks/whop", express.text({ type: "*/*" }), async (req, res) => {
   const ORDER_TRIGGERS = new Set(["invoice.paid", "membership.activated", "payment.succeeded"]);
   if (!ORDER_TRIGGERS.has(event.type)) return;
   const payment = event.data || {};
-  // De-dupe by our own cart token (carried in metadata) so invoice.paid +
-  // membership.activated for the SAME purchase only ever make one order.
-  const dedupeKey = (payment.metadata && payment.metadata.cart_token) || payment.id;
+  // Correlate the cart ourselves via the unique plan id. This also de-dupes
+  // invoice.paid + membership.activated for the SAME purchase down to one order.
+  const planId = payment.plan && payment.plan.id;
+  const dedupeKey = planId || payment.id;
   if (dedupeKey && processedPayments.has(dedupeKey)) return;
   if (dedupeKey) processedPayments.add(dedupeKey);
 
   try {
-    console.log("[payment.succeeded] payload:", JSON.stringify(payment)); // VERIFY
+    const stored = (planId && cartByPlan.get(planId)) || {};
     const meta = payment.metadata || {};
-    const lineItems = JSON.parse(meta.shopify_line_items || "[]");
-    const email = meta.email || payment.user?.email || payment.member?.email; // VERIFY
-    const ship = payment.shipping_address || payment.address || {};           // VERIFY
+    const lineItems = stored.lineItems || JSON.parse(meta.shopify_line_items || "[]");
+    const email = (payment.user && payment.user.email) || stored.email || meta.email;
+    const ship = payment.shipping_address || payment.address || {}; // empty on membership.activated
+    if (!lineItems.length) { console.error("[webhook] no cart on file for plan", planId); return; }
     await createShopifyOrder({ payment, lineItems, email, ship });
   } catch (err) {
     console.error("[webhook] Shopify order failed", err);
