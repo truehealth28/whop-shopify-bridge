@@ -275,11 +275,15 @@ a{color:inherit}
 </div>
 <script>
 var btn=document.getElementById('placeOrder');
-btn.addEventListener('click',function(){btn.disabled=true;btn.textContent='Processing…';try{wco.submit('whop-embedded-checkout')}catch(e){console.error(e);btn.disabled=false;btn.textContent='Place Order · ${money(amount)}';}});
+var capturedAddress=null;
+function isAddr(a){return a&&(a.line1||a.address1);}
+async function grabAddress(){try{var a=await wco.getAddress('whop-embedded-checkout');if(isAddr(a))capturedAddress=a;}catch(e){}}
+btn.addEventListener('click',async function(){btn.disabled=true;btn.textContent='Processing…';await grabAddress();try{wco.submit('whop-embedded-checkout')}catch(e){console.error(e);btn.disabled=false;btn.textContent='Place Order · ${money(amount)}';}});
 window.onWhopState=function(state){try{if(state==='ready'){btn.disabled=false;}else if(state==='disabled'){btn.disabled=true;}}catch(e){}};
 window.onWhopComplete=async function(planId,receiptId){
   try{${META_PIXEL_ID ? `fbq('track','Purchase',{value:${amount},currency:'USD'});` : ""}}catch(e){}
-  var address={};try{address=await wco.getAddress('whop-embedded-checkout')}catch(e){}
+  var address=capturedAddress||{};
+  if(!isAddr(address)){try{var a=await wco.getAddress('whop-embedded-checkout');if(a)address=a;}catch(e){}}
   try{await fetch('${HOST_URL}/order-complete',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({planId:planId||'${plan}',receiptId:receiptId,address:address})})}catch(e){}
   document.getElementById('checkout-root').innerHTML='<div style="max-width:520px;margin:80px auto;padding:0 24px;text-align:center"><div style="font-size:54px;line-height:1">✅</div><h1 style="font-size:24px;margin:14px 0 8px">Order confirmed</h1><p style="color:#555;font-size:15px;line-height:1.6">Thank you for your order! It\\'s on its way and a confirmation email is in your inbox.</p></div>';
 };
