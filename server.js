@@ -113,7 +113,10 @@ app.post("/checkout/create", express.json(), async (req, res) => {
         // Attach to (or create) one physical product that collects shipping
         // and uses your own statement descriptor.
         product: {
-          external_identifier: WHOP_PRODUCT_EXTERNAL_ID,
+          // Fresh product id so collect_shipping_address:false actually applies
+          // (the original product had address collection baked in and ignored
+          // the per-checkout flag). We collect shipping on the /c page instead.
+          external_identifier: WHOP_PRODUCT_EXTERNAL_ID + "-noship",
           title: "ShapeDrops Order",
           // We collect the shipping address ourselves on the /c page (Whop's
           // embed gives no reliable way to read its address field back), so the
