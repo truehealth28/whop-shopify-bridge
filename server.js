@@ -290,14 +290,14 @@ window.onWhopComplete=async function(planId,receiptId){
 // On completion the page posts here WITH the shipping address -> create the
 // paid Shopify order (with address) and fire Meta server-side.
 app.post("/order-complete", express.json(), async (req, res) => {
+  const { planId, receiptId, address } = req.body || {};
+  if (!planId) return res.status(400).json({ error: "missing plan" });
+  if (processedPayments.has(planId)) return res.json({ ok: true, deduped: true });
+  const cart = cartByPlan.get(planId) || {};
+  const lineItems = cart.lineItems || [];
+  if (!lineItems.length) { console.error("[order-complete] no cart for", planId); return res.status(404).json({ error: "no cart" }); }
+  processedPayments.add(planId); // claim; released below if the order fails
   try {
-    const { planId, receiptId, address } = req.body || {};
-    if (!planId) return res.status(400).json({ error: "missing plan" });
-    if (processedPayments.has(planId)) return res.json({ ok: true, deduped: true });
-    processedPayments.add(planId);
-    const cart = cartByPlan.get(planId) || {};
-    const lineItems = cart.lineItems || [];
-    if (!lineItems.length) { console.error("[order-complete] no cart for", planId); return res.status(404).json({ error: "no cart" }); }
     await createShopifyOrder({
       payment: { id: receiptId || planId, amount: cart.amount },
       lineItems, email: cart.email, ship: address || {},
@@ -305,6 +305,7 @@ app.post("/order-complete", express.json(), async (req, res) => {
     fireMetaPurchase({ value: cart.amount, email: cart.email, address }).catch((e) => console.error("[meta]", e));
     res.json({ ok: true });
   } catch (err) {
+    processedPayments.delete(planId); // release so the webhook fallback / a retry can recover
     console.error("[order-complete]", err);
     res.status(500).json({ error: "failed" });
   }
@@ -349,6 +350,10 @@ app.post("/webhooks/whop", express.text({ type: "*/*" }), async (req, res) => {
   // invoice.paid + membership.activated for the SAME purchase down to one order.
   const planId = payment.plan && payment.plan.id;
   const dedupeKey = planId || payment.id;
+  // Give the on-page /order-complete (which carries the shipping address) a head
+  // start to win this purchase, so the order is created WITH the address. The
+  // webhook is the fallback for buyers who close the tab before it fires.
+  await new Promise((r) => setTimeout(r, 8000));
   if (dedupeKey && processedPayments.has(dedupeKey)) return;
   if (dedupeKey) processedPayments.add(dedupeKey);
 
@@ -359,16 +364,25 @@ app.post("/webhooks/whop", express.text({ type: "*/*" }), async (req, res) => {
     const email = (payment.user && payment.user.email) || stored.email || meta.email;
     const ship = payment.shipping_address || payment.address || {}; // empty on membership.activated
     if (!lineItems.length) { console.error("[webhook] no cart on file for plan", planId); return; }
-    await createShopifyOrder({ payment, lineItems, email, ship });
+    const amount = Number(payment && payment.amount) > 0 ? Number(payment.amount) : stored.amount;
+    await createShopifyOrder({ payment: { id: payment.id, amount }, lineItems, email, ship });
   } catch (err) {
     console.error("[webhook] Shopify order failed", err);
-    processedPayments.delete(payment.id); // allow a retry to recover
+    if (dedupeKey) processedPayments.delete(dedupeKey); // release so /order-complete or a retry can recover
   }
 });
 
 async function createShopifyOrder({ payment, lineItems, email, ship }) {
   if (!shopifyToken) throw new Error("No Shopify token yet — visit HOST_URL/auth once.");
   const hasAddr = ship && (ship.line1 || ship.address1);
+  // Whop's membership.activated webhook sends amount 0, which Shopify rejects
+  // ("Amount must be greater than zero for sale transaction"). Fall back to the
+  // cart's line-item total so the transaction always carries a real amount.
+  let txAmount = Number(payment && (payment.amount ?? payment.final_amount));
+  if (!(txAmount > 0)) {
+    txAmount = lineItems.reduce((s, li) => s + (Number(li.price) || 0) * (Number(li.quantity) || 1), 0);
+  }
+  txAmount = Math.round((Number(txAmount) || 0) * 100) / 100;
   const order = {
     order: {
       line_items: lineItems.map((li) => ({
@@ -380,8 +394,9 @@ async function createShopifyOrder({ payment, lineItems, email, ship }) {
       source_name: "whop",
       tags: "Whop",
       note: `Paid via Whop — payment ${payment.id}`,
-      transactions: [{ kind: "sale", status: "success", gateway: "Whop",
-        amount: payment.amount ?? payment.final_amount ?? undefined }],
+      transactions: txAmount > 0
+        ? [{ kind: "sale", status: "success", gateway: "Whop", amount: txAmount }]
+        : undefined,
       shipping_address: hasAddr ? {
         name: ship.name,
         address1: ship.line1 || ship.address1,
