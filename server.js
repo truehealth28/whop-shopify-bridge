@@ -130,12 +130,14 @@ app.post("/checkout/create", express.json(), async (req, res) => {
 
     // Remember this cart so the webhook can rebuild the Shopify order later,
     // keyed by the unique plan id (Whop doesn't pass our metadata to the webhook).
+    const compareMap = await fetchCompareAt(items.map((it) => it.variantId));
     cartByPlan.set(checkout.plan.id, {
       lineItems: items.map((it) => ({
         variant_id: it.variantId,
         quantity: it.quantity || 1,
         title: it.title || "",
         price: Number(it.price) || 0,
+        compareAt: Number(compareMap[String(it.variantId)]) || 0,
         image: it.image || "",
       })),
       cartToken: cartToken || "",
@@ -168,16 +170,23 @@ app.get("/c", (req, res) => {
   const esc = (s) => String(s == null ? "" : s).replace(/[&<>"']/g, (c) =>
     ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
   const money = (n) => "$" + (Number(n) || 0).toFixed(2);
+  let savings = 0;
   const itemsHtml = items.map((it) => {
     const qty = Number(it.quantity) || 1;
     const line = (Number(it.price) || 0) * qty;
+    const cmp = (Number(it.compareAt) || 0) * qty;
+    if (cmp > line) savings += (cmp - line);
     const img = it.image
       ? `<img src="${esc(it.image)}" alt="" class="os-img">`
       : `<div class="os-img os-img--ph"></div>`;
+    const priceCell = cmp > line
+      ? `<div class="os-price"><span class="os-was">${money(cmp)}</span>${money(line)}</div>`
+      : `<div class="os-price">${money(line)}</div>`;
     return `<div class="os-item"><div class="os-thumb">${img}<span class="os-qty">${qty}</span></div>` +
-      `<div class="os-name">${esc(it.title || "Item")}</div>` +
-      `<div class="os-price">${money(line)}</div></div>`;
+      `<div class="os-name">${esc(it.title || "Item")}</div>` + priceCell + `</div>`;
   }).join("") || `<div class="os-item"><div class="os-name">Your order</div><div class="os-price">${money(amount)}</div></div>`;
+  savings = Math.round(savings * 100) / 100;
+  const regularTotal = amount + savings;
   const pixel = META_PIXEL_ID
     ? `<script>!function(f,b,e,v,n,t,s){if(f.fbq)return;n=f.fbq=function(){n.callMethod?n.callMethod.apply(n,arguments):n.queue.push(arguments)};if(!f._fbq)f._fbq=n;n.push=n;n.loaded=!0;n.version='2.0';n.queue=[];t=b.createElement(e);t.async=!0;t.src=v;s=b.getElementsByTagName(e)[0];s.parentNode.insertBefore(t,s)}(window,document,'script','https://connect.facebook.net/en_US/fbevents.js');fbq('init','${META_PIXEL_ID}');fbq('track','PageView');fbq('track','InitiateCheckout',{value:${amount},currency:'USD'});</script>`
     : "";
@@ -217,6 +226,9 @@ a{color:inherit}
 .os-free{color:#1a7f37;font-weight:600}
 .os-total{display:flex;justify-content:space-between;align-items:baseline;border-top:1px solid #e6e6e6;padding-top:18px;margin-top:6px;font-size:21px;font-weight:700;color:#111}
 .os-cur{font-size:12px;color:#999;font-weight:600;margin-right:5px}
+.os-was{color:#9a9a9a;text-decoration:line-through;font-weight:500;margin-right:7px;font-size:13px}
+.os-savings{display:flex;align-items:center;justify-content:space-between;margin-top:14px;padding:11px 14px;background:#eaf7ee;border:1px solid #cdebd6;border-radius:9px;color:#1a7f37;font-size:13.5px;font-weight:700}
+.os-savings-tag{display:flex;align-items:center;gap:6px;letter-spacing:.02em}
 .badges{margin-top:22px;padding-top:18px;border-top:1px solid #ededed;display:flex;flex-wrap:wrap;gap:10px 16px;font-size:12.5px;color:#777}
 .badges span{display:flex;align-items:center;gap:5px}
 @media(max-width:820px){
@@ -243,6 +255,7 @@ a{color:inherit}
         <div class="os-row"><span>Shipping</span><span class="os-free">FREE</span></div>
       </div>
       <div class="os-total"><span>Total</span><span><span class="os-cur">USD</span>${money(amount)}</span></div>
+      ${savings > 0.001 ? `<div class="os-savings"><span class="os-savings-tag">🏷️ TOTAL SAVINGS</span><span>−${money(savings)}</span></div>` : ""}
       <div class="badges"><span>🇺🇸 Made in USA</span><span>✓ GMP Certified</span><span>✓ 90-Day Money-Back</span></div>
     </div></aside>
   </div>
@@ -369,6 +382,29 @@ async function createShopifyOrder({ payment, lineItems, email, ship }) {
   };
   const r = await shopifyAdmin("/orders.json", "POST", order);
   console.log("[shopify] order created:", r.order?.name);
+}
+
+// Look up compare-at (original) prices for the cart's variants straight from
+// Shopify, so the summary can show the struck-through price + savings
+// automatically. Best-effort — never blocks checkout creation.
+async function fetchCompareAt(variantIds) {
+  const out = {};
+  try {
+    const ids = [...new Set((variantIds || []).filter(Boolean).map(String))];
+    if (!shopifyToken || !ids.length) return out;
+    const gids = ids.map((id) => `gid://shopify/ProductVariant/${id}`);
+    const query = `query($ids:[ID!]!){nodes(ids:$ids){... on ProductVariant{id compareAtPrice}}}`;
+    const resp = await fetch(`https://${SHOPIFY_STORE}/admin/api/${SHOPIFY_API_VERSION}/graphql.json`, {
+      method: "POST",
+      headers: { "X-Shopify-Access-Token": shopifyToken, "Content-Type": "application/json" },
+      body: JSON.stringify({ query, variables: { ids: gids } }),
+    });
+    const data = await resp.json();
+    for (const n of (data && data.data && data.data.nodes) || []) {
+      if (n && n.id) out[String(n.id).split("/").pop()] = n.compareAtPrice ? Number(n.compareAtPrice) : 0;
+    }
+  } catch (e) { console.error("[compareAt]", e.message); }
+  return out;
 }
 
 async function shopifyAdmin(path, method, body) {
