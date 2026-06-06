@@ -1,0 +1,99 @@
+{%- comment -%}
+  TrueHealthic — Whop checkout swap (storefront side)
+  -----------------------------------------------------------------------------
+  Routes Shopify's "Checkout" button to the Whop-powered checkout instead of
+  Shopify's native checkout.
+
+  Install:
+    1) Theme > Edit code > snippets > add a file: whop-checkout.liquid
+       (paste this whole file into it)
+    2) In layout/theme.liquid, just before </body>, add:  {% render 'whop-checkout' %}
+    3) Set BRIDGE_URL below to your deployed server.js URL.
+    4) Turn OFF dynamic checkout buttons (Shop Pay / PayPal express) on the
+       product + cart templates, or they'll bypass this and hit Shopify checkout.
+
+  NOTE: button selectors vary by theme. If your theme's checkout button isn't
+  caught, add its selector to the `sels` list below.
+{%- endcomment -%}
+<script>
+(function () {
+  var BRIDGE_URL = "https://YOUR-BRIDGE-URL";   // <-- set after deploying server.js
+  var REDIRECT   = true;  // true = Whop-hosted page (simplest). false = in-page embed.
+
+  async function goToWhop(e) {
+    if (e) { e.preventDefault(); e.stopImmediatePropagation(); }
+    try {
+      var cart = await fetch("/cart.js").then(function (r) { return r.json(); });
+      if (!cart.items || !cart.items.length) return;
+
+      var items = cart.items.map(function (i) {
+        return {
+          variantId: i.variant_id,
+          quantity:  i.quantity,
+          price:     i.price / 100,   // Shopify gives cents
+          title:     i.title
+        };
+      });
+
+      var resp = await fetch(BRIDGE_URL + "/checkout/create", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ items: items, cartToken: cart.token })
+      }).then(function (r) { return r.json(); });
+
+      if (!resp || !resp.planId) throw new Error("no plan returned");
+
+      if (REDIRECT) {
+        window.location.href = resp.checkoutUrl;       // Whop-hosted checkout
+      } else {
+        mountEmbed(resp.planId, resp.sessionId);        // in-page embed
+      }
+    } catch (err) {
+      console.error("Whop checkout error", err);
+      alert("Sorry — checkout is temporarily unavailable. Please try again.");
+    }
+  }
+
+  var sels = [
+    'button[name="checkout"]',
+    '[name="checkout"]',
+    'a[href="/checkout"]',
+    'a[href*="/checkout"]',
+    '.cart__checkout',
+    '#checkout'
+  ];
+
+  function hook() {
+    document.querySelectorAll(sels.join(",")).forEach(function (el) {
+      if (el.__whopHooked) return;
+      el.__whopHooked = true;
+      el.addEventListener("click", goToWhop, true);
+    });
+  }
+
+  document.addEventListener("DOMContentLoaded", hook);
+  document.addEventListener("shopify:section:load", hook);
+  hook();
+
+  // ---- Optional in-page embed (set REDIRECT = false) ----
+  function mountEmbed(planId, sessionId) {
+    if (!document.getElementById("whop-loader")) {
+      var s = document.createElement("script");
+      s.id = "whop-loader"; s.async = true; s.defer = true;
+      s.src = "https://js.whop.com/static/checkout/loader.js";
+      document.head.appendChild(s);
+    }
+    var overlay = document.createElement("div");
+    overlay.setAttribute("style",
+      "position:fixed;inset:0;background:rgba(0,0,0,.6);z-index:99999;overflow:auto;padding:24px");
+    overlay.innerHTML =
+      '<div style="max-width:520px;margin:24px auto;background:#fff;border-radius:12px;overflow:hidden">' +
+        '<div data-whop-checkout-plan-id="' + planId + '"' +
+        ' data-whop-checkout-session="' + sessionId + '"' +
+        ' data-whop-checkout-return-url="' + window.location.origin + '/pages/order-complete"></div>' +
+      '</div>';
+    overlay.addEventListener("click", function (e) { if (e.target === overlay) overlay.remove(); });
+    document.body.appendChild(overlay);
+  }
+})();
+</script>

@@ -1,0 +1,17 @@
+{
+  "name": "whop-shopify-bridge",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Routes Shopify checkout through Whop, then syncs paid orders back to Shopify.",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "dependencies": {
+    "@whop/sdk": "latest",
+    "express": "^4.19.2"
+  }
+}
