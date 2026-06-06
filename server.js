@@ -44,6 +44,10 @@ const {
   HOST_URL,                        // public URL of THIS server (Railway gives it)
   ALLOWED_ORIGIN = "*",            // https://shoptruehealth.com
   PORT = 3000,
+  // ---- Meta (Facebook) ads tracking ----
+  META_PIXEL_ID = "",              // your Meta Pixel ID -> client-side Purchase event
+  META_CAPI_TOKEN = "",            // optional: Conversions API token -> server-side match
+  BRAND_NAME = "TrueHealthic",     // shown on the hosted checkout page
 } = process.env;
 
 const whop = new Whop({
@@ -111,12 +115,14 @@ app.post("/checkout/create", express.json(), async (req, res) => {
       lineItems: items.map((it) => ({ variant_id: it.variantId, quantity: it.quantity || 1 })),
       cartToken: cartToken || "",
       email: email || null,
+      amount: Number(total.toFixed(2)),
     });
 
     return res.json({
       sessionId: checkout.id,
       planId: checkout.plan.id,
-      checkoutUrl: `https://whop.com/checkout/${checkout.plan.id}`,
+      // v2: send buyers to OUR on-domain embedded checkout, not whop.com
+      checkoutUrl: `${HOST_URL}/c?plan=${checkout.plan.id}&session=${checkout.id}`,
     });
   } catch (err) {
     console.error("[/checkout/create]", err);
@@ -125,7 +131,81 @@ app.post("/checkout/create", express.json(), async (req, res) => {
 });
 
 // ============================================================================
-// 2) WHOP WEBHOOK  ->  create the PAID order in Shopify
+// 1b) ON-DOMAIN EMBEDDED CHECKOUT  (keeps buyers on your site + collects address)
+// ============================================================================
+app.get("/c", (req, res) => {
+  const plan = String(req.query.plan || "");
+  const session = String(req.query.session || "");
+  const cart = cartByPlan.get(plan) || {};
+  const amount = cart.amount || 0;
+  const pixel = META_PIXEL_ID
+    ? `<script>!function(f,b,e,v,n,t,s){if(f.fbq)return;n=f.fbq=function(){n.callMethod?n.callMethod.apply(n,arguments):n.queue.push(arguments)};if(!f._fbq)f._fbq=n;n.push=n;n.loaded=!0;n.version='2.0';n.queue=[];t=b.createElement(e);t.async=!0;t.src=v;s=b.getElementsByTagName(e)[0];s.parentNode.insertBefore(t,s)}(window,document,'script','https://connect.facebook.net/en_US/fbevents.js');fbq('init','${META_PIXEL_ID}');fbq('track','PageView');fbq('track','InitiateCheckout',{value:${amount},currency:'USD'});</script>`
+    : "";
+  res.set("Content-Type", "text/html").send(`<!doctype html><html><head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Secure Checkout — ${BRAND_NAME}</title>
+<script async defer src="https://js.whop.com/static/checkout/loader.js"></script>${pixel}
+<style>body{font-family:system-ui,-apple-system,Segoe UI,sans-serif;margin:0;background:#f7f7f8;color:#111}
+.wrap{max-width:540px;margin:0 auto;padding:20px}.bar{font-weight:700;font-size:18px;padding:8px 0 16px}
+#placeOrder{width:100%;padding:16px;border:0;border-radius:10px;background:#111;color:#fff;font-size:17px;font-weight:600;cursor:pointer;margin-top:12px}
+.sec{text-align:center;color:#888;font-size:13px;margin-top:10px}</style>
+</head><body><div class="wrap">
+<div class="bar">${BRAND_NAME}</div>
+<div id="wco" data-whop-checkout-plan-id="${plan}"${session ? ` data-whop-checkout-session="${session}"` : ""} data-whop-checkout-hide-submit-button="true" data-whop-checkout-on-complete="onWhopComplete"></div>
+<button id="placeOrder">Place Order &middot; $${amount.toFixed(2)}</button>
+<div class="sec">🔒 Secure checkout</div>
+</div>
+<script>
+document.getElementById('placeOrder').addEventListener('click',function(){try{wco.submit('wco')}catch(e){console.error(e)}});
+window.onWhopComplete=async function(planId,receiptId){
+  try{${META_PIXEL_ID ? `fbq('track','Purchase',{value:${amount},currency:'USD'});` : ""}}catch(e){}
+  var address={};try{address=await wco.getAddress('wco')}catch(e){}
+  try{await fetch('${HOST_URL}/order-complete',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({planId:planId||'${plan}',receiptId:receiptId,address:address})})}catch(e){}
+  document.querySelector('.wrap').innerHTML='<h2>✅ Order confirmed</h2><p>Thank you! Your order is on its way and a confirmation is in your inbox.</p>';
+};
+</script></body></html>`);
+});
+
+// On completion the page posts here WITH the shipping address -> create the
+// paid Shopify order (with address) and fire Meta server-side.
+app.post("/order-complete", express.json(), async (req, res) => {
+  try {
+    const { planId, receiptId, address } = req.body || {};
+    if (!planId) return res.status(400).json({ error: "missing plan" });
+    if (processedPayments.has(planId)) return res.json({ ok: true, deduped: true });
+    processedPayments.add(planId);
+    const cart = cartByPlan.get(planId) || {};
+    const lineItems = cart.lineItems || [];
+    if (!lineItems.length) { console.error("[order-complete] no cart for", planId); return res.status(404).json({ error: "no cart" }); }
+    await createShopifyOrder({
+      payment: { id: receiptId || planId, amount: cart.amount },
+      lineItems, email: cart.email, ship: address || {},
+    });
+    fireMetaPurchase({ value: cart.amount, email: cart.email, address }).catch((e) => console.error("[meta]", e));
+    res.json({ ok: true });
+  } catch (err) {
+    console.error("[order-complete]", err);
+    res.status(500).json({ error: "failed" });
+  }
+});
+
+// Meta Conversions API (server-side Purchase) — only fires when a token is set.
+async function fireMetaPurchase({ value, email, address }) {
+  if (!META_PIXEL_ID || !META_CAPI_TOKEN) return;
+  const h = (s) => crypto.createHash("sha256").update(String(s || "").trim().toLowerCase()).digest("hex");
+  const user_data = {};
+  if (email) user_data.em = [h(email)];
+  if (address && address.city) user_data.ct = [h(address.city)];
+  if (address && address.postalCode) user_data.zp = [h(address.postalCode)];
+  const body = { data: [{ event_name: "Purchase", event_time: Math.floor(Date.now() / 1000),
+    action_source: "website", user_data, custom_data: { currency: "usd", value: Number(value) || 0 } }] };
+  const r = await fetch(`https://graph.facebook.com/v19.0/${META_PIXEL_ID}/events?access_token=${META_CAPI_TOKEN}`,
+    { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+  if (!r.ok) console.error("[meta] CAPI", r.status, await r.text());
+}
+
+// ============================================================================
+// 2) WHOP WEBHOOK  ->  create the PAID order in Shopify (fallback / no address)
 // ============================================================================
 app.post("/webhooks/whop", express.text({ type: "*/*" }), async (req, res) => {
   let event;
