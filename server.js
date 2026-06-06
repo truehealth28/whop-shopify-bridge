@@ -284,7 +284,7 @@ a{color:inherit}
         <div id="sf_err" class="sf-err">Please complete your shipping address above.</div>
       </form>
       <div class="sf-paylabel">Contact &amp; payment</div>
-      <div id="whop-embedded-checkout" data-whop-checkout-plan-id="${plan}"${session ? ` data-whop-checkout-session="${session}"` : ""} data-whop-checkout-theme="light" data-whop-checkout-style-container-padding-x="0" data-whop-checkout-style-container-padding-top="0" data-whop-checkout-return-url="${HOST_URL}/thanks" data-whop-checkout-hide-submit-button="true" data-whop-checkout-on-state-change="onWhopState" data-whop-checkout-on-complete="onWhopComplete"></div>
+      <div id="whop-embedded-checkout" data-whop-checkout-plan-id="${plan}"${session ? ` data-whop-checkout-session="${session}"` : ""} data-whop-checkout-theme="light" data-whop-checkout-hide-address="true" data-whop-checkout-style-container-padding-x="0" data-whop-checkout-style-container-padding-top="0" data-whop-checkout-return-url="${HOST_URL}/thanks" data-whop-checkout-hide-submit-button="true" data-whop-checkout-on-state-change="onWhopState" data-whop-checkout-on-complete="onWhopComplete"></div>
       <button id="placeOrder" disabled>Place Order &middot; ${money(amount)}</button>
       <div class="trust">🔒 <b>Secure SSL checkout</b> — your info is encrypted &amp; never stored.</div>
     </div></main>
@@ -313,10 +313,11 @@ function gv(id){var el=document.getElementById(id);return el?el.value.trim():'';
 function readShip(){return {name:gv('sf_name'),country:gv('sf_country')||'US',line1:gv('sf_line1'),line2:gv('sf_line2'),city:gv('sf_city'),state:gv('sf_state'),postalCode:gv('sf_zip')};}
 function validShip(){var ok=true;REQ.forEach(function(id){var el=document.getElementById(id);if(el){if(!el.value.trim()){el.classList.add('bad');ok=false;}else{el.classList.remove('bad');}}});form.classList.toggle('invalid',!ok);return ok;}
 REQ.forEach(function(id){var el=document.getElementById(id);if(el){var clr=function(){el.classList.remove('bad');if(!form.querySelector('.bad'))form.classList.remove('invalid');};el.addEventListener('input',clr);el.addEventListener('change',clr);}});
-btn.addEventListener('click',function(){
+btn.addEventListener('click',async function(){
   if(!validShip()){var b=form.querySelector('.bad');if(b)b.focus();return;}
   capturedAddress=readShip();
   btn.disabled=true;btn.textContent='Processing…';
+  try{await wco.setAddress('whop-embedded-checkout',capturedAddress);}catch(e){console.warn('setAddress',e);}
   try{wco.submit('whop-embedded-checkout')}catch(e){console.error(e);btn.disabled=false;btn.textContent='Place Order · ${money(amount)}';}
 });
 window.onWhopState=function(state){try{if(state==='ready'){btn.disabled=false;}else if(state==='disabled'){btn.disabled=true;}}catch(e){}};
