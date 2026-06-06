@@ -127,14 +127,18 @@ app.post("/webhooks/whop", express.text({ type: "*/*" }), async (req, res) => {
   }
   res.sendStatus(200); // ack fast so Whop doesn't retry
 
-  // Whop v1 names the "payment went through" event `invoice_paid`. We log every
-  // event type so the first real payment confirms the exact name + payload shape.
-  console.log("[webhook] received type:", event.type);
-  const ORDER_TRIGGERS = new Set(["invoice_paid", "payment.succeeded", "payment_succeeded"]);
-  if (!ORDER_TRIGGERS.has(event.type)) return; // membership_activated etc. -> logged only
-  const payment = event.data;
-  if (payment && processedPayments.has(payment.id)) return;
-  if (payment) processedPayments.add(payment.id);
+  // The SDK delivers event.type in DOT notation ("invoice.paid",
+  // "membership.activated") — NOT the underscore names shown in the dashboard.
+  // Log the full payload of every event so we can confirm the field shapes.
+  console.log("[webhook] type:", event.type, "| data:", JSON.stringify(event.data));
+  const ORDER_TRIGGERS = new Set(["invoice.paid", "membership.activated", "payment.succeeded"]);
+  if (!ORDER_TRIGGERS.has(event.type)) return;
+  const payment = event.data || {};
+  // De-dupe by our own cart token (carried in metadata) so invoice.paid +
+  // membership.activated for the SAME purchase only ever make one order.
+  const dedupeKey = (payment.metadata && payment.metadata.cart_token) || payment.id;
+  if (dedupeKey && processedPayments.has(dedupeKey)) return;
+  if (dedupeKey) processedPayments.add(dedupeKey);
 
   try {
     console.log("[payment.succeeded] payload:", JSON.stringify(payment)); // VERIFY
