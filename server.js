@@ -23,6 +23,8 @@
 
 import express from "express";
 import crypto from "node:crypto";
+import fs from "node:fs";
+import path from "node:path";
 import Whop from "@whop/sdk";
 
 const {
@@ -60,6 +62,21 @@ const whop = new Whop({
 let shopifyToken = SHOPIFY_ADMIN_TOKEN;
 const processedPayments = new Set(); // de-dupe webhook retries (use a DB in prod)
 const cartByPlan = new Map();        // planId -> cart  (Whop doesn't echo our metadata back)
+
+// --- Hardening: persist in-flight carts to a Railway Volume so a restart or
+// redeploy between checkout and payment never drops an order. ---
+const CART_FILE = process.env.CART_FILE || "/data/carts.json";
+try {
+  const saved = JSON.parse(fs.readFileSync(CART_FILE, "utf8"));
+  for (const [k, v] of Object.entries(saved)) cartByPlan.set(k, v);
+  console.log(`[carts] restored ${cartByPlan.size} cart(s) from ${CART_FILE}`);
+} catch { /* no file yet — fine */ }
+function persistCarts() {
+  try {
+    fs.mkdirSync(path.dirname(CART_FILE), { recursive: true });
+    fs.writeFileSync(CART_FILE, JSON.stringify(Object.fromEntries(cartByPlan)));
+  } catch (e) { console.error("[carts] persist failed:", e.message); }
+}
 
 const app = express();
 app.use((req, res, next) => {
@@ -117,6 +134,7 @@ app.post("/checkout/create", express.json(), async (req, res) => {
       email: email || null,
       amount: Number(total.toFixed(2)),
     });
+    persistCarts();
 
     return res.json({
       sessionId: checkout.id,
