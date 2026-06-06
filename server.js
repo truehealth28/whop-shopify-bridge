@@ -50,6 +50,8 @@ const {
   META_PIXEL_ID = "",              // your Meta Pixel ID -> client-side Purchase event
   META_CAPI_TOKEN = "",            // optional: Conversions API token -> server-side match
   BRAND_NAME = "TrueHealthic",     // shown on the hosted checkout page
+  BRAND_LOGO_URL = "https://cdn.shopify.com/s/files/1/0986/7673/6369/files/Screenshot_2026-04-14_at_11.06.29_PM_x320.png", // header logo image
+  BRAND_ACCENT = "#16264a",        // navy brand color for the Place Order button
 } = process.env;
 
 const whop = new Whop({
@@ -191,13 +193,14 @@ a{color:inherit}
 .hdr-in{max-width:1000px;margin:0 auto;padding:22px 20px;text-align:center}
 .logo{font-size:24px;font-weight:800;letter-spacing:-.02em;color:#111}
 .tm{font-size:.55em;vertical-align:super;font-weight:600;margin-left:1px}
+.logo-img{height:30px;width:auto;max-width:80%;display:inline-block;vertical-align:middle}
 .page{display:flex;align-items:stretch;min-height:calc(100vh - 67px)}
 .col-main{flex:1.15;display:flex;justify-content:flex-end;background:#fff}
 .col-side{flex:.85;background:#fafbfc;border-left:1px solid #e6e6e6}
 .col-main>.inner{width:100%;max-width:560px;padding:30px 44px 56px 24px}
 .col-side>.inner{width:100%;max-width:430px;padding:34px 24px 56px 44px;position:sticky;top:0}
 #whop-embedded-checkout{min-height:380px}
-#placeOrder{width:100%;padding:15px;border:0;border-radius:8px;background:#111;color:#fff;font-size:16px;font-weight:600;cursor:pointer;margin-top:14px;transition:opacity .15s}
+#placeOrder{width:100%;padding:15px;border:0;border-radius:8px;background:${BRAND_ACCENT};color:#fff;font-size:16px;font-weight:600;cursor:pointer;margin-top:14px;transition:opacity .15s}
 #placeOrder:hover{opacity:.88}#placeOrder:disabled{opacity:.45;cursor:default}
 .trust{text-align:center;color:#8a8a8a;font-size:12.5px;margin-top:16px;line-height:1.7}
 .trust b{color:#5a5a5a;font-weight:600}
@@ -225,7 +228,7 @@ a{color:inherit}
 </style>
 </head><body>
 <div id="checkout-root">
-  <header class="hdr"><div class="hdr-in"><span class="logo">${esc(BRAND_NAME)}<span class="tm">™</span></span></div></header>
+  <header class="hdr"><div class="hdr-in">${BRAND_LOGO_URL ? `<img src="${esc(BRAND_LOGO_URL)}" alt="${esc(BRAND_NAME)}" class="logo-img">` : `<span class="logo">${esc(BRAND_NAME)}<span class="tm">™</span></span>`}</div></header>
   <div class="page">
     <main class="col-main"><div class="inner">
       <div id="whop-embedded-checkout" data-whop-checkout-plan-id="${plan}"${session ? ` data-whop-checkout-session="${session}"` : ""} data-whop-checkout-theme="light" data-whop-checkout-style-container-padding-x="0" data-whop-checkout-style-container-padding-top="0" data-whop-checkout-return-url="${HOST_URL}/thanks" data-whop-checkout-hide-submit-button="true" data-whop-checkout-on-state-change="onWhopState" data-whop-checkout-on-complete="onWhopComplete"></div>
@@ -438,6 +441,20 @@ app.get("/thanks", (req, res) => {
     ? `<script>!function(f,b,e,v,n,t,s){if(f.fbq)return;n=f.fbq=function(){n.callMethod?n.callMethod.apply(n,arguments):n.queue.push(arguments)};if(!f._fbq)f._fbq=n;n.push=n;n.loaded=!0;n.version='2.0';n.queue=[];t=b.createElement(e);t.async=!0;t.src=v;s=b.getElementsByTagName(e)[0];s.parentNode.insertBefore(t,s)}(window,document,'script','https://connect.facebook.net/en_US/fbevents.js');fbq('init','${META_PIXEL_ID}');fbq('track','PageView');fbq('track','Purchase',{currency:'USD'});</script>`
     : "";
   res.set("Content-Type", "text/html").send(`<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Thank you — ${BRAND_NAME}</title>${pixel}<style>body{font-family:system-ui,-apple-system,Segoe UI,sans-serif;background:#f7f7f8;color:#111;text-align:center;padding:60px 20px}</style></head><body><h2>✅ Order confirmed</h2><p>Thank you! Your order is on its way and a confirmation is in your inbox.</p></body></html>`);
+});
+
+// Apple Pay domain verification (self-hosted) — proxy Whop's association file so
+// Apple sees it at our domain, with zero downtime and no DNS repointing. Stays in
+// sync automatically if Whop rotates the file.
+app.get("/.well-known/apple-developer-merchantid-domain-association", async (_req, res) => {
+  try {
+    const r = await fetch("https://whop.com/.well-known/apple-platform-integrator/apple-developer-merchantid-domain-association/");
+    const buf = Buffer.from(await r.arrayBuffer());
+    res.set("Content-Type", "text/plain").send(buf);
+  } catch (e) {
+    console.error("[apple-pay] association file proxy failed:", e.message);
+    res.status(502).send("verification file unavailable");
+  }
 });
 
 app.get("/health", (_req, res) => res.send("ok"));
