@@ -169,15 +169,17 @@ app.get("/c", (req, res) => {
 .sec{text-align:center;color:#888;font-size:13px;margin-top:10px}</style>
 </head><body><div class="wrap">
 <div class="bar">${BRAND_NAME}</div>
-<div id="wco" data-whop-checkout-plan-id="${plan}"${session ? ` data-whop-checkout-session="${session}"` : ""} data-whop-checkout-hide-submit-button="true" data-whop-checkout-on-complete="onWhopComplete"></div>
+<div id="whop-embedded-checkout" data-whop-checkout-plan-id="${plan}"${session ? ` data-whop-checkout-session="${session}"` : ""} data-whop-checkout-return-url="${HOST_URL}/thanks" data-whop-checkout-hide-submit-button="true" data-whop-checkout-on-state-change="onWhopState" data-whop-checkout-on-complete="onWhopComplete"></div>
 <button id="placeOrder">Place Order &middot; $${amount.toFixed(2)}</button>
 <div class="sec">🔒 Secure checkout</div>
 </div>
 <script>
-document.getElementById('placeOrder').addEventListener('click',function(){try{wco.submit('wco')}catch(e){console.error(e)}});
+var btn=document.getElementById('placeOrder');
+btn.addEventListener('click',function(){btn.disabled=true;btn.textContent='Processing…';try{wco.submit('whop-embedded-checkout')}catch(e){console.error(e);btn.disabled=false;btn.textContent='Place Order · $${amount.toFixed(2)}';}});
+window.onWhopState=function(state){try{if(state==='ready'){btn.disabled=false;}else if(state==='disabled'){btn.disabled=true;}}catch(e){}};
 window.onWhopComplete=async function(planId,receiptId){
   try{${META_PIXEL_ID ? `fbq('track','Purchase',{value:${amount},currency:'USD'});` : ""}}catch(e){}
-  var address={};try{address=await wco.getAddress('wco')}catch(e){}
+  var address={};try{address=await wco.getAddress('whop-embedded-checkout')}catch(e){}
   try{await fetch('${HOST_URL}/order-complete',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({planId:planId||'${plan}',receiptId:receiptId,address:address})})}catch(e){}
   document.querySelector('.wrap').innerHTML='<h2>✅ Order confirmed</h2><p>Thank you! Your order is on its way and a confirmation is in your inbox.</p>';
 };
@@ -355,6 +357,15 @@ app.get("/auth/callback", async (req, res) => {
     console.error("[auth/callback]", err);
     res.status(500).send("Auth failed — check server logs.");
   }
+});
+
+// Landing page for external-payment redirects (PayPal, etc.) that can't stay
+// in-frame. Card payments never reach this — they use the in-page on-complete.
+app.get("/thanks", (req, res) => {
+  const pixel = META_PIXEL_ID
+    ? `<script>!function(f,b,e,v,n,t,s){if(f.fbq)return;n=f.fbq=function(){n.callMethod?n.callMethod.apply(n,arguments):n.queue.push(arguments)};if(!f._fbq)f._fbq=n;n.push=n;n.loaded=!0;n.version='2.0';n.queue=[];t=b.createElement(e);t.async=!0;t.src=v;s=b.getElementsByTagName(e)[0];s.parentNode.insertBefore(t,s)}(window,document,'script','https://connect.facebook.net/en_US/fbevents.js');fbq('init','${META_PIXEL_ID}');fbq('track','PageView');fbq('track','Purchase',{currency:'USD'});</script>`
+    : "";
+  res.set("Content-Type", "text/html").send(`<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Thank you — ${BRAND_NAME}</title>${pixel}<style>body{font-family:system-ui,-apple-system,Segoe UI,sans-serif;background:#f7f7f8;color:#111;text-align:center;padding:60px 20px}</style></head><body><h2>✅ Order confirmed</h2><p>Thank you! Your order is on its way and a confirmation is in your inbox.</p></body></html>`);
 });
 
 app.get("/health", (_req, res) => res.send("ok"));
