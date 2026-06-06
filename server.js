@@ -61,6 +61,7 @@ const whop = new Whop({
 let shopifyToken = SHOPIFY_ADMIN_TOKEN;
 const processedPayments = new Set(); // de-dupe webhook retries (use a DB in prod)
 const cartByPlan = new Map();        // planId -> cart  (Whop doesn't echo our metadata back)
+const STORE_URL = (ALLOWED_ORIGIN && ALLOWED_ORIGIN.indexOf("http") === 0) ? ALLOWED_ORIGIN : "https://shoptruehealth.com";
 
 // --- Hardening: persist in-flight carts to a Railway Volume so a restart or
 // redeploy between checkout and payment never drops an order. ---
@@ -319,8 +320,13 @@ app.post("/checkout/finalize", express.json(), async (req, res) => {
 app.get("/c", (req, res) => {
   const plan = String(req.query.plan || "");
   const session = String(req.query.session || "");
-  const step = String(req.query.step || "address") === "pay" ? "pay" : "address";
-  const cart = cartByPlan.get(plan) || {};
+  const embedMode = req.query.embed === "1";
+  const cart = cartByPlan.get(plan);
+  // Anyone landing here without a live cart (e.g. the bare domain) is sent to
+  // the store, not a blank page.
+  if (!cart || !Array.isArray(cart.lineItems) || !cart.lineItems.length) {
+    return res.redirect(302, STORE_URL);
+  }
   const amount = Number(cart.amount) || 0;                 // pay step: incl. shipping
   const subtotal = Number(cart.subtotal != null ? cart.subtotal : amount) || 0;
   const shipping = cart.shipping || null;                  // {title, price} at pay step
@@ -349,7 +355,7 @@ app.get("/c", (req, res) => {
   savings = Math.round(savings * 100) / 100;
 
   const pixel = META_PIXEL_ID
-    ? `<script>!function(f,b,e,v,n,t,s){if(f.fbq)return;n=f.fbq=function(){n.callMethod?n.callMethod.apply(n,arguments):n.queue.push(arguments)};if(!f._fbq)f._fbq=n;n.push=n;n.loaded=!0;n.version='2.0';n.queue=[];t=b.createElement(e);t.async=!0;t.src=v;s=b.getElementsByTagName(e)[0];s.parentNode.insertBefore(t,s)}(window,document,'script','https://connect.facebook.net/en_US/fbevents.js');fbq('init','${META_PIXEL_ID}');fbq('track','PageView');${step === "address" ? `fbq('track','InitiateCheckout',{value:${subtotal},currency:'USD'});` : ""}</script>`
+    ? `<script>!function(f,b,e,v,n,t,s){if(f.fbq)return;n=f.fbq=function(){n.callMethod?n.callMethod.apply(n,arguments):n.queue.push(arguments)};if(!f._fbq)f._fbq=n;n.push=n;n.loaded=!0;n.version='2.0';n.queue=[];t=b.createElement(e);t.async=!0;t.src=v;s=b.getElementsByTagName(e)[0];s.parentNode.insertBefore(t,s)}(window,document,'script','https://connect.facebook.net/en_US/fbevents.js');fbq('init','${META_PIXEL_ID}');fbq('track','PageView');${!embedMode ? `fbq('track','InitiateCheckout',{value:${subtotal},currency:'USD'});` : ""}</script>`
     : "";
 
   // ---- shared chrome (head + styles + header) ----
@@ -372,6 +378,9 @@ a{color:inherit}
 .col-main>.inner{width:100%;max-width:560px;padding:30px 44px 56px 24px}
 .col-side>.inner{width:100%;max-width:430px;padding:34px 24px 56px 44px;position:sticky;top:0}
 #whop-embedded-checkout{min-height:300px}
+.pay-section{margin-top:2px}
+.pay-frame{width:100%;border:0;min-height:300px;display:block;background:transparent}
+.pay-loading{padding:22px 2px;color:#8a8a8a;font-size:14px}
 .cta{width:100%;padding:15px;border:0;border-radius:8px;background:${BRAND_ACCENT};color:#fff;font-size:16px;font-weight:600;cursor:pointer;margin-top:14px;transition:opacity .15s}
 .cta:hover{opacity:.88}.cta:disabled{opacity:.45;cursor:default}
 .trust{text-align:center;color:#8a8a8a;font-size:12.5px;margin-top:16px;line-height:1.7}
@@ -447,53 +456,49 @@ a{color:inherit}
     : "";
   const badges = `<div class="badges"><span>🇺🇸 Made in USA</span><span>✓ GMP Certified</span><span>✓ 90-Day Money-Back</span></div>`;
 
-  if (step === "pay") {
-    // ---------- PAYMENT STEP ----------
-    const shipTitle = shipping ? shipping.title : "Shipping";
-    const shipPrice = shipping ? Number(shipping.price) : 0;
-    const summary = `
-      <button type="button" class="os-toggle" onclick="this.closest('.col-side').classList.toggle('open')"><span class="os-toggle-l">Order summary <span class="chev">⌄</span></span><span class="os-toggle-r">${money(amount)}</span></button>
-      <div class="os-body">
-      <h2 class="os-h">Order summary</h2>
-      <div class="os-items">${itemsHtml}</div>
-      <div class="os-rows">
-        <div class="os-row"><span>Subtotal</span><span>${money(subtotal)}</span></div>
-        <div class="os-row"><span>Shipping${shipTitle ? " &middot; " + esc(shipTitle) : ""}</span><span${shipPrice === 0 ? ' class="os-free"' : ""}>${shipPrice === 0 ? "FREE" : money(shipPrice)}</span></div>
-      </div>
-      <div class="os-total"><span>Total</span><span><span class="os-cur">USD</span>${money(amount)}</span></div>
-      ${savingsHtml}
-      ${badges}
-      </div>`;
-    const addrLine = addr
-      ? `${esc(addr.line1)}${addr.line2 ? ", " + esc(addr.line2) : ""}, ${esc(addr.city)}, ${esc(addr.state)} ${esc(addr.postalCode)}`
+  if (embedMode) {
+    // ---- MINIMAL PAYMENT FRAME (rendered inside the inline frame on /c) ----
+    // Always mounts cleanly because it's a fresh page load; the main page swaps
+    // this frame's src whenever shipping changes.
+    const efbq = META_PIXEL_ID
+      ? `<script>!function(f,b,e,v,n,t,s){if(f.fbq)return;n=f.fbq=function(){n.callMethod?n.callMethod.apply(n,arguments):n.queue.push(arguments)};if(!f._fbq)f._fbq=n;n.push=n;n.loaded=!0;n.version='2.0';n.queue=[];t=b.createElement(e);t.async=!0;t.src=v;s=b.getElementsByTagName(e)[0];s.parentNode.insertBefore(t,s)}(window,document,'script','https://connect.facebook.net/en_US/fbevents.js');fbq('init','${META_PIXEL_ID}');</script>`
       : "";
-    res.set("Content-Type", "text/html").send(`${head}
-  <div class="page">
-    <main class="col-main"><div class="inner">
-      <div class="shipto">
-        <div class="st-row"><span class="st-lbl">Ship to</span><span class="st-val">${esc(addr ? addr.name : "")}${addr ? "<br>" + addrLine : ""}</span><a class="st-edit" href="javascript:history.back()">Edit</a></div>
-        <div class="st-row"><span class="st-lbl">Method</span><span class="st-val">${esc(shipTitle)} — ${shipPrice === 0 ? "FREE" : money(shipPrice)}</span></div>
-      </div>
-      <div class="sf-paylabel">Contact &amp; payment</div>
-      <div id="whop-embedded-checkout" data-whop-checkout-plan-id="${plan}"${session ? ` data-whop-checkout-session="${session}"` : ""} data-whop-checkout-theme="light" data-whop-checkout-hide-address="true" data-whop-checkout-style-container-padding-x="0" data-whop-checkout-style-container-padding-top="0" data-whop-checkout-return-url="${HOST_URL}/thanks" data-whop-checkout-hide-submit-button="true" data-whop-checkout-on-state-change="onWhopState" data-whop-checkout-on-complete="onWhopComplete"></div>
-      <button id="placeOrder" class="cta" disabled>Place Order &middot; ${money(amount)}</button>
-      <div class="trust">🔒 <b>Secure SSL checkout</b> — your info is encrypted &amp; never stored.</div>
-    </div></main>
-    <aside class="col-side"><div class="inner">${summary}</div></aside>
-  </div>
+    res.set("Content-Type", "text/html").send(`<!doctype html><html lang="en"><head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Payment</title>
+<script async defer src="https://js.whop.com/static/checkout/loader.js"></script>${efbq}
+<style>
+*{box-sizing:border-box}
+html,body{margin:0;padding:0;background:transparent;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;color:#1a1a1a;-webkit-font-smoothing:antialiased}
+#whop-embedded-checkout{min-height:280px}
+#placeOrder{width:100%;padding:15px;border:0;border-radius:8px;background:${BRAND_ACCENT};color:#fff;font-size:16px;font-weight:600;cursor:pointer;margin-top:14px;transition:opacity .15s}
+#placeOrder:hover{opacity:.88}#placeOrder:disabled{opacity:.45;cursor:default}
+.trust{text-align:center;color:#8a8a8a;font-size:12.5px;margin-top:16px;line-height:1.7}
+.trust b{color:#5a5a5a;font-weight:600}
+</style></head><body>
+<div id="pay-root">
+  <div id="whop-embedded-checkout" data-whop-checkout-plan-id="${plan}"${session ? ` data-whop-checkout-session="${session}"` : ""} data-whop-checkout-theme="light" data-whop-checkout-hide-address="true" data-whop-checkout-style-container-padding-x="0" data-whop-checkout-style-container-padding-top="0" data-whop-checkout-return-url="${HOST_URL}/thanks" data-whop-checkout-hide-submit-button="true" data-whop-checkout-on-state-change="onWhopState" data-whop-checkout-on-complete="onWhopComplete"></div>
+  <button id="placeOrder" disabled>Place Order &middot; ${money(amount)}</button>
+  <div class="trust">🔒 <b>Secure SSL checkout</b> — your info is encrypted &amp; never stored.</div>
 </div>
 <script>
+var ORIGIN='${HOST_URL}';
 var btn=document.getElementById('placeOrder');
+function post(m){try{parent.postMessage(m,ORIGIN);}catch(e){}}
+function sendHeight(){post({type:'wh-height',h:Math.max(document.body.scrollHeight,document.documentElement.scrollHeight)});}
 btn.addEventListener('click',function(){
   btn.disabled=true;btn.textContent='Processing…';
   try{wco.submit('whop-embedded-checkout')}catch(e){console.error(e);btn.disabled=false;btn.textContent='Place Order · ${money(amount)}';}
 });
-window.onWhopState=function(state){try{if(state==='ready'){btn.disabled=false;}else if(state==='disabled'){btn.disabled=true;}}catch(e){}};
+window.onWhopState=function(state){try{if(state==='ready'){btn.disabled=false;}else if(state==='disabled'){btn.disabled=true;}}catch(e){}sendHeight();};
 window.onWhopComplete=async function(planId,receiptId){
-  try{${META_PIXEL_ID ? `fbq('track','Purchase',{value:${amount},currency:'USD'});` : ""}}catch(e){}
-  try{await fetch('${HOST_URL}/order-complete',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({planId:planId||'${plan}',receiptId:receiptId})})}catch(e){}
-  document.getElementById('checkout-root').innerHTML='<div style="max-width:520px;margin:80px auto;padding:0 24px;text-align:center"><div style="font-size:54px;line-height:1">✅</div><h1 style="font-size:24px;margin:14px 0 8px">Order confirmed</h1><p style="color:#555;font-size:15px;line-height:1.6">Thank you for your order! It\\'s on its way and a confirmation email is in your inbox.</p></div>';
+  ${META_PIXEL_ID ? `try{fbq('track','Purchase',{value:${amount},currency:'USD'});}catch(e){}` : ""}
+  try{await fetch(ORIGIN+'/order-complete',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({planId:planId||'${plan}',receiptId:receiptId})})}catch(e){}
+  post({type:'wh-complete'});
+  if(parent===window){document.getElementById('pay-root').innerHTML='<div style="text-align:center;padding:50px 0"><div style="font-size:50px">✅</div><h2>Order confirmed</h2><p style="color:#555">Thank you! A confirmation is in your inbox.</p></div>';}
 };
+try{new MutationObserver(sendHeight).observe(document.body,{childList:true,subtree:true,attributes:true});}catch(e){}
+window.addEventListener('load',function(){sendHeight();setTimeout(sendHeight,600);setTimeout(sendHeight,1500);setTimeout(sendHeight,3000);});
 </script>
 </body></html>`);
     return;
@@ -531,19 +536,27 @@ window.onWhopComplete=async function(planId,receiptId){
       </form>
       <h2 class="sec-h">Shipping method</h2>
       <div id="shipMethods" class="ship-methods"><div class="ship-note">Enter your shipping address to see available shipping methods.</div></div>
-      <button id="continueBtn" class="cta" disabled>Continue to payment</button>
+      <div id="paySection" class="pay-section" hidden>
+        <div class="sf-paylabel">Contact &amp; payment</div>
+        <div id="payLoading" class="pay-loading">Loading secure payment…</div>
+        <iframe id="payFrame" class="pay-frame" allow="payment *" style="display:none" title="Payment"></iframe>
+      </div>
       <div class="trust">🔒 <b>Secure SSL checkout</b> — your info is encrypted &amp; never stored.</div>
     </div></main>
     <aside class="col-side"><div class="inner">${summary}</div></aside>
   </div>
 </div>
 <script>
-var btn=document.getElementById('continueBtn');
 var form=document.getElementById('shipForm');
 var box=document.getElementById('shipMethods');
+var paySection=document.getElementById('paySection');
+var payFrame=document.getElementById('payFrame');
+var payLoading=document.getElementById('payLoading');
 var REQ=['sf_name','sf_line1','sf_city','sf_state','sf_zip'];
-var rates=[], selIdx=-1, ratesKey='', ratesLoading=false;
+var rates=[], selIdx=-1, ratesKey='', ratesLoading=false, finalizeKey='', revealDeb, deb;
 var SUBTOTAL=${subtotal};
+var ORIGIN='${HOST_URL}';
+var PLAN='${plan}';
 function gv(id){var el=document.getElementById(id);return el?el.value.trim():'';}
 function readShip(){return {name:gv('sf_name'),country:'US',line1:gv('sf_line1'),line2:gv('sf_line2'),city:gv('sf_city'),state:gv('sf_state'),postalCode:gv('sf_zip')};}
 function validShip(){var ok=true;REQ.forEach(function(id){var el=document.getElementById(id);if(el){if(!el.value.trim()){el.classList.add('bad');ok=false;}else{el.classList.remove('bad');}}});form.classList.toggle('invalid',!ok);return ok;}
@@ -559,10 +572,10 @@ function updateSummary(){
   if(totalCell)totalCell.textContent=money(tot);
   if(toggleR)toggleR.textContent=money(tot);
 }
-function updateContinue(){ btn.disabled = !(validShip() && rates.length>0 && selIdx>=0 && !ratesLoading); }
+function hidePayment(){ paySection.hidden=true; payFrame.style.display='none'; try{payFrame.src='about:blank';}catch(e){} finalizeKey=''; }
 function renderRates(list){
   rates=list||[]; selIdx = rates.length?0:-1;
-  if(!rates.length){ box.innerHTML='<div class="ship-note">No shipping options are available for this address.</div>'; updateSummary(); updateContinue(); return; }
+  if(!rates.length){ box.innerHTML='<div class="ship-note">No shipping options are available for this address.</div>'; updateSummary(); hidePayment(); return; }
   var html='';
   rates.forEach(function(r,i){
     html += '<label class="ship-opt'+(i===0?' sel':'')+'" data-i="'+i+'"><input type="radio" name="shipopt" '+(i===0?'checked':'')+'><span class="so-t">'+r.title+'</span><span class="so-p">'+(r.price===0?'FREE':money(r.price))+'</span></label>';
@@ -573,42 +586,58 @@ function renderRates(list){
       selIdx=parseInt(el.getAttribute('data-i'),10);
       [].forEach.call(box.querySelectorAll('.ship-opt'),function(o){o.classList.remove('sel');});
       el.classList.add('sel'); var radio=el.querySelector('input'); if(radio)radio.checked=true;
-      updateSummary(); updateContinue();
+      updateSummary(); revealPayment();
     });
   });
-  updateSummary(); updateContinue();
+  updateSummary(); revealPayment();
 }
 async function fetchRates(){
-  if(!validShip()){ box.innerHTML='<div class="ship-note">Enter your shipping address to see available shipping methods.</div>'; rates=[];selIdx=-1; updateSummary(); updateContinue(); return; }
+  if(!validShip()){ box.innerHTML='<div class="ship-note">Enter your shipping address to see available shipping methods.</div>'; rates=[];selIdx=-1; updateSummary(); hidePayment(); return; }
   var addr=readShip();
   var key=[addr.line1,addr.city,addr.state,addr.postalCode].join('|');
-  if(key===ratesKey && rates.length){ updateContinue(); return; }
-  ratesKey=key; ratesLoading=true; updateContinue();
+  if(key===ratesKey && rates.length){ revealPayment(); return; }
+  ratesKey=key; ratesLoading=true;
   box.innerHTML='<div class="ship-note">Calculating shipping…</div>';
   try{
-    var r=await fetch('${HOST_URL}/shipping/rates',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({plan:'${plan}',address:addr})}).then(function(x){return x.json();});
+    var r=await fetch(ORIGIN+'/shipping/rates',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({plan:PLAN,address:addr})}).then(function(x){return x.json();});
     ratesLoading=false;
-    if(key!==ratesKey) return;            // a newer request superseded this one
+    if(key!==ratesKey) return;
     renderRates(r.rates||[]);
-  }catch(e){ ratesLoading=false; box.innerHTML='<div class="ship-note">Could not load shipping — please re-check your address.</div>'; updateContinue(); }
+  }catch(e){ ratesLoading=false; box.innerHTML='<div class="ship-note">Could not load shipping — please re-check your address.</div>'; hidePayment(); }
 }
-var deb;
+function revealPayment(){
+  if(!(validShip() && rates.length && selIdx>=0)){ hidePayment(); return; }
+  clearTimeout(revealDeb); revealDeb=setTimeout(doFinalize,350);
+}
+async function doFinalize(){
+  if(!(validShip() && rates.length && selIdx>=0)) return;
+  var addr=readShip();
+  var key=[addr.name,addr.line1,addr.line2,addr.city,addr.state,addr.postalCode,rates[selIdx].handle].join('|');
+  if(key===finalizeKey) return;
+  finalizeKey=key;
+  paySection.hidden=false; payLoading.style.display='block'; payLoading.textContent='Loading secure payment…'; payFrame.style.display='none';
+  try{
+    var resp=await fetch(ORIGIN+'/checkout/finalize',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({plan:PLAN,address:addr,handle:rates[selIdx].handle,title:rates[selIdx].title})}).then(function(x){return x.json();});
+    if(!resp||!resp.plan)throw new Error('finalize');
+    if(finalizeKey!==key) return;
+    payFrame.src=ORIGIN+'/c?plan='+encodeURIComponent(resp.plan)+'&session='+encodeURIComponent(resp.session||'')+'&embed=1';
+  }catch(e){ payLoading.textContent='Could not load payment — please try again.'; finalizeKey=''; }
+}
+payFrame.addEventListener('load',function(){ try{ if(payFrame.src && payFrame.src.indexOf('embed=1')>-1){ payFrame.style.display='block'; payLoading.style.display='none'; } }catch(e){} });
+window.addEventListener('message',function(e){
+  if(e.origin!==ORIGIN) return;
+  var d=e.data||{};
+  if(d.type==='wh-height' && d.h){ payFrame.style.height=(Number(d.h)+6)+'px'; }
+  else if(d.type==='wh-complete'){
+    ${META_PIXEL_ID ? `try{fbq('track','Purchase',{value:SUBTOTAL+(selIdx>=0?rates[selIdx].price:0),currency:'USD'});}catch(e){}` : ""}
+    document.getElementById('checkout-root').innerHTML='<div style="max-width:520px;margin:80px auto;padding:0 24px;text-align:center"><div style="font-size:54px;line-height:1">✅</div><h1 style="font-size:24px;margin:14px 0 8px">Order confirmed</h1><p style="color:#555;font-size:15px;line-height:1.6">Thank you for your order! It\\'s on its way and a confirmation email is in your inbox.</p></div>';
+  }
+});
 REQ.concat(['sf_line2']).forEach(function(id){var el=document.getElementById(id);if(el){
-  el.addEventListener('input',function(){el.classList.remove('bad');if(!form.querySelector('.bad'))form.classList.remove('invalid');clearTimeout(deb);deb=setTimeout(fetchRates,500);updateContinue();});
+  el.addEventListener('input',function(){el.classList.remove('bad');if(!form.querySelector('.bad'))form.classList.remove('invalid');clearTimeout(deb);deb=setTimeout(fetchRates,500);});
   el.addEventListener('change',function(){clearTimeout(deb);fetchRates();});
 }});
-btn.addEventListener('click',async function(){
-  if(!validShip()){var b=form.querySelector('.bad');if(b)b.focus();return;}
-  if(selIdx<0||!rates.length){fetchRates();return;}
-  btn.disabled=true;btn.textContent='Loading payment…';
-  var addr=readShip();
-  try{
-    var resp=await fetch('${HOST_URL}/checkout/finalize',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({plan:'${plan}',address:addr,handle:rates[selIdx].handle,title:rates[selIdx].title})}).then(function(x){return x.json();});
-    if(!resp||!resp.plan)throw new Error('finalize');
-    window.location.href='${HOST_URL}/c?plan='+encodeURIComponent(resp.plan)+'&session='+encodeURIComponent(resp.session||'')+'&step=pay';
-  }catch(e){ btn.disabled=false; btn.textContent='Continue to payment'; alert('Sorry — could not load payment. Please try again.'); }
-});
-updateSummary(); updateContinue();
+updateSummary();
 </script>
 </body></html>`);
 });
@@ -853,5 +882,5 @@ app.get("/.well-known/apple-developer-merchantid-domain-association", async (_re
 });
 
 app.get("/health", (_req, res) => res.send("ok"));
-app.get("/", (_req, res) => res.send("Whop↔Shopify bridge is running."));
+app.get("/", (_req, res) => res.redirect(302, STORE_URL));
 app.listen(PORT, () => console.log(`Bridge listening on :${PORT}`));
