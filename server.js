@@ -321,6 +321,11 @@ app.get("/c", (req, res) => {
   const plan = String(req.query.plan || "");
   const session = String(req.query.session || "");
   const embedMode = req.query.embed === "1";
+  // Preview = the payment embed is mounted immediately on page load (subtotal
+  // only, before an address/shipping rate exists). It's fully visible but its
+  // "Place Order" stays locked until the buyer's address + shipping selection
+  // swap it for the finalized (subtotal + shipping) plan.
+  const previewMode = req.query.preview === "1";
   const cart = cartByPlan.get(plan);
   // Anyone landing here without a live cart (e.g. the bare domain) is sent to
   // the store, not a blank page.
@@ -483,14 +488,24 @@ html,body{margin:0;padding:0;background:transparent;font-family:-apple-system,Bl
 </div>
 <script>
 var ORIGIN='${HOST_URL}';
+var PREVIEW=${previewMode ? "true" : "false"};
 var btn=document.getElementById('placeOrder');
 function post(m){try{parent.postMessage(m,ORIGIN);}catch(e){}}
 function sendHeight(){post({type:'wh-height',h:Math.max(document.body.scrollHeight,document.documentElement.scrollHeight)});}
 btn.addEventListener('click',function(){
+  // Preview frame can't take payment — it has no shipping/address yet. Nudge the
+  // buyer up to the address form instead of submitting a shipping-less charge.
+  if(PREVIEW){ post({type:'wh-need-address'}); return; }
   btn.disabled=true;btn.textContent='Processing…';
   try{wco.submit('whop-embedded-checkout')}catch(e){console.error(e);btn.disabled=false;btn.textContent='Place Order · ${money(amount)}';}
 });
-window.onWhopState=function(state){try{if(state==='ready'){btn.disabled=false;}else if(state==='disabled'){btn.disabled=true;}}catch(e){}sendHeight();};
+window.onWhopState=function(state){
+  // Button looks/behaves the same in preview and final (enabled once the card
+  // is ready). In preview a click is intercepted above and routed to the address
+  // form instead of charging, so no shipping-less order can slip through.
+  try{if(state==='ready'){btn.disabled=false;}else if(state==='disabled'){btn.disabled=true;}}catch(e){}
+  sendHeight();
+};
 window.onWhopComplete=async function(planId,receiptId){
   ${META_PIXEL_ID ? `try{fbq('track','Purchase',{value:${amount},currency:'USD'});}catch(e){}` : ""}
   try{await fetch(ORIGIN+'/order-complete',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({planId:planId||'${plan}',receiptId:receiptId})})}catch(e){}
@@ -536,12 +551,11 @@ window.addEventListener('load',function(){sendHeight();setTimeout(sendHeight,600
       </form>
       <h2 class="sec-h">Shipping method</h2>
       <div id="shipMethods" class="ship-methods"><div class="ship-note">Enter your shipping address to see available shipping methods.</div></div>
-      <div id="paySection" class="pay-section" hidden>
+      <div id="paySection" class="pay-section">
         <div class="sf-paylabel">Contact &amp; payment</div>
         <div id="payLoading" class="pay-loading">Loading secure payment…</div>
         <iframe id="payFrame" class="pay-frame" allow="payment *" style="display:none" title="Payment"></iframe>
       </div>
-      <div class="trust">🔒 <b>Secure SSL checkout</b> — your info is encrypted &amp; never stored.</div>
     </div></main>
     <aside class="col-side"><div class="inner">${summary}</div></aside>
   </div>
@@ -553,10 +567,11 @@ var paySection=document.getElementById('paySection');
 var payFrame=document.getElementById('payFrame');
 var payLoading=document.getElementById('payLoading');
 var REQ=['sf_name','sf_line1','sf_city','sf_state','sf_zip'];
-var rates=[], selIdx=-1, ratesKey='', ratesLoading=false, finalizeKey='', revealDeb, deb;
+var rates=[], selIdx=-1, ratesKey='', ratesLoading=false, finalizeKey='', payMode='', revealDeb, deb;
 var SUBTOTAL=${subtotal};
 var ORIGIN='${HOST_URL}';
 var PLAN='${plan}';
+var SESSION='${session}';
 function gv(id){var el=document.getElementById(id);return el?el.value.trim():'';}
 function readShip(){return {name:gv('sf_name'),country:'US',line1:gv('sf_line1'),line2:gv('sf_line2'),city:gv('sf_city'),state:gv('sf_state'),postalCode:gv('sf_zip')};}
 function validShip(){var ok=true;REQ.forEach(function(id){var el=document.getElementById(id);if(el){if(!el.value.trim()){el.classList.add('bad');ok=false;}else{el.classList.remove('bad');}}});form.classList.toggle('invalid',!ok);return ok;}
@@ -572,10 +587,20 @@ function updateSummary(){
   if(totalCell)totalCell.textContent=money(tot);
   if(toggleR)toggleR.textContent=money(tot);
 }
-function hidePayment(){ paySection.hidden=true; payFrame.style.display='none'; try{payFrame.src='about:blank';}catch(e){} finalizeKey=''; }
+function previewUrl(){ return ORIGIN+'/c?plan='+encodeURIComponent(PLAN)+'&session='+encodeURIComponent(SESSION)+'&embed=1&preview=1'; }
+// Payment is always on screen. When there's no valid address/shipping yet we
+// show the PREVIEW frame (subtotal only; a Place Order click routes to the
+// address form) instead of hiding it.
+function showPreview(){
+  if(payMode==='preview') return;        // already showing the preview frame
+  payMode='preview'; finalizeKey='';
+  payLoading.style.display='block'; payLoading.textContent='Loading secure payment…';
+  payFrame.style.display='none';
+  payFrame.src=previewUrl();
+}
 function renderRates(list){
   rates=list||[]; selIdx = rates.length?0:-1;
-  if(!rates.length){ box.innerHTML='<div class="ship-note">No shipping options are available for this address.</div>'; updateSummary(); hidePayment(); return; }
+  if(!rates.length){ box.innerHTML='<div class="ship-note">No shipping options are available for this address.</div>'; updateSummary(); showPreview(); return; }
   var html='';
   rates.forEach(function(r,i){
     html += '<label class="ship-opt'+(i===0?' sel':'')+'" data-i="'+i+'"><input type="radio" name="shipopt" '+(i===0?'checked':'')+'><span class="so-t">'+r.title+'</span><span class="so-p">'+(r.price===0?'FREE':money(r.price))+'</span></label>';
@@ -592,7 +617,7 @@ function renderRates(list){
   updateSummary(); revealPayment();
 }
 async function fetchRates(){
-  if(!validShip()){ box.innerHTML='<div class="ship-note">Enter your shipping address to see available shipping methods.</div>'; rates=[];selIdx=-1; updateSummary(); hidePayment(); return; }
+  if(!validShip()){ box.innerHTML='<div class="ship-note">Enter your shipping address to see available shipping methods.</div>'; rates=[];selIdx=-1; updateSummary(); showPreview(); return; }
   var addr=readShip();
   var key=[addr.line1,addr.city,addr.state,addr.postalCode].join('|');
   if(key===ratesKey && rates.length){ revealPayment(); return; }
@@ -603,31 +628,38 @@ async function fetchRates(){
     ratesLoading=false;
     if(key!==ratesKey) return;
     renderRates(r.rates||[]);
-  }catch(e){ ratesLoading=false; box.innerHTML='<div class="ship-note">Could not load shipping — please re-check your address.</div>'; hidePayment(); }
+  }catch(e){ ratesLoading=false; box.innerHTML='<div class="ship-note">Could not load shipping — please re-check your address.</div>'; showPreview(); }
 }
 function revealPayment(){
-  if(!(validShip() && rates.length && selIdx>=0)){ hidePayment(); return; }
+  if(!(validShip() && rates.length && selIdx>=0)){ showPreview(); return; }
   clearTimeout(revealDeb); revealDeb=setTimeout(doFinalize,350);
 }
 async function doFinalize(){
   if(!(validShip() && rates.length && selIdx>=0)) return;
   var addr=readShip();
   var key=[addr.name,addr.line1,addr.line2,addr.city,addr.state,addr.postalCode,rates[selIdx].handle].join('|');
-  if(key===finalizeKey) return;
+  if(key===finalizeKey && payMode===key) return;   // already mounted for this exact selection
   finalizeKey=key;
-  paySection.hidden=false; payLoading.style.display='block'; payLoading.textContent='Loading secure payment…'; payFrame.style.display='none';
+  payLoading.style.display='block'; payLoading.textContent='Updating total…'; payFrame.style.display='none';
   try{
     var resp=await fetch(ORIGIN+'/checkout/finalize',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({plan:PLAN,address:addr,handle:rates[selIdx].handle,title:rates[selIdx].title})}).then(function(x){return x.json();});
     if(!resp||!resp.plan)throw new Error('finalize');
     if(finalizeKey!==key) return;
+    payMode=key;                                    // live, payable frame for subtotal+shipping
     payFrame.src=ORIGIN+'/c?plan='+encodeURIComponent(resp.plan)+'&session='+encodeURIComponent(resp.session||'')+'&embed=1';
-  }catch(e){ payLoading.textContent='Could not load payment — please try again.'; finalizeKey=''; }
+  }catch(e){ payLoading.textContent='Could not load payment — please try again.'; finalizeKey=''; payMode=''; }
 }
 payFrame.addEventListener('load',function(){ try{ if(payFrame.src && payFrame.src.indexOf('embed=1')>-1){ payFrame.style.display='block'; payLoading.style.display='none'; } }catch(e){} });
 window.addEventListener('message',function(e){
   if(e.origin!==ORIGIN) return;
   var d=e.data||{};
   if(d.type==='wh-height' && d.h){ payFrame.style.height=(Number(d.h)+6)+'px'; }
+  else if(d.type==='wh-need-address'){
+    // Buyer clicked the locked preview button — send them to the first missing field.
+    validShip();
+    var bad=form.querySelector('.bad')||document.getElementById('sf_name');
+    if(bad){ try{bad.focus();}catch(_){} bad.scrollIntoView({behavior:'smooth',block:'center'}); }
+  }
   else if(d.type==='wh-complete'){
     ${META_PIXEL_ID ? `try{fbq('track','Purchase',{value:SUBTOTAL+(selIdx>=0?rates[selIdx].price:0),currency:'USD'});}catch(e){}` : ""}
     document.getElementById('checkout-root').innerHTML='<div style="max-width:520px;margin:80px auto;padding:0 24px;text-align:center"><div style="font-size:54px;line-height:1">✅</div><h1 style="font-size:24px;margin:14px 0 8px">Order confirmed</h1><p style="color:#555;font-size:15px;line-height:1.6">Thank you for your order! It\\'s on its way and a confirmation email is in your inbox.</p></div>';
@@ -638,6 +670,7 @@ REQ.concat(['sf_line2']).forEach(function(id){var el=document.getElementById(id)
   el.addEventListener('change',function(){clearTimeout(deb);fetchRates();});
 }});
 updateSummary();
+showPreview();   // mount the visible payment embed immediately on load (subtotal)
 </script>
 </body></html>`);
 });
