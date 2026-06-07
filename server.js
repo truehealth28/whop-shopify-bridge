@@ -88,6 +88,29 @@ app.use((req, res, next) => {
 });
 
 // ============================================================================
+// 0) APPLE PAY domain verification for embedded checkout.
+//    Whop registers Apple Pay via a UNIVERSAL association file hosted at
+//    whop.com/.well-known/apple-platform-integrator/... . We proxy those exact
+//    bytes at the path Apple/Whop checks so this domain (and the apex it serves)
+//    can be verified. See https://docs.whop.com/payments/apple-pay
+// ============================================================================
+const APPLE_PAY_ASSOC_URL =
+  "https://whop.com/.well-known/apple-platform-integrator/apple-developer-merchantid-domain-association";
+app.get("/.well-known/apple-developer-merchantid-domain-association", async (_req, res) => {
+  try {
+    const r = await fetch(APPLE_PAY_ASSOC_URL);
+    if (!r.ok) throw new Error("upstream " + r.status);
+    const buf = Buffer.from(await r.arrayBuffer());
+    res.set("Content-Type", "application/octet-stream");
+    res.set("Cache-Control", "public, max-age=3600");
+    res.send(buf);
+  } catch (e) {
+    console.error("[apple-pay] association proxy failed:", e.message);
+    res.status(502).send("association fetch failed");
+  }
+});
+
+// ============================================================================
 // 1) STOREFRONT  ->  stash the live cart, send buyer to the address step
 // ============================================================================
 app.post("/checkout/create", express.json(), async (req, res) => {
