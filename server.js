@@ -716,13 +716,30 @@ app.post("/order-complete", express.json(), async (req, res) => {
   const lineItems = cart.lineItems || [];
   if (!lineItems.length) { console.error("[order-complete] no cart for", planId); return res.status(404).json({ error: "no cart" }); }
   const ship = cart.address || address || {};
+  // The buyer enters their email in the Whop payment step (not our address
+  // form), so pull it from the Whop payment before creating the Shopify order.
+  // Without this, the on-page path records the order with no email.
+  let email = cart.email || null;
+  if (!email && receiptId && WHOP_API_KEY) {
+    try {
+      const pr = await fetch(`https://api.whop.com/api/v1/payments/${receiptId}`, {
+        headers: { Authorization: `Bearer ${WHOP_API_KEY}` },
+      });
+      if (pr.ok) {
+        const pd = await pr.json();
+        email = (pd && pd.user && pd.user.email) || (pd && pd.email) || null;
+      } else {
+        console.error("[order-complete] whop payment lookup", pr.status);
+      }
+    } catch (e) { console.error("[order-complete] email lookup failed:", e.message); }
+  }
   processedPayments.add(planId); // claim; released below if the order fails
   try {
     await createShopifyOrder({
       payment: { id: receiptId || planId, amount: cart.amount },
-      lineItems, email: cart.email, ship, shipping: cart.shipping || null,
+      lineItems, email, ship, shipping: cart.shipping || null,
     });
-    fireMetaPurchase({ value: cart.amount, email: cart.email, address: ship }).catch((e) => console.error("[meta]", e));
+    fireMetaPurchase({ value: cart.amount, email, address: ship }).catch((e) => console.error("[meta]", e));
     res.json({ ok: true });
   } catch (err) {
     processedPayments.delete(planId); // release so the webhook fallback / a retry can recover
