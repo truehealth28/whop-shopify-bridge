@@ -831,6 +831,7 @@ async function createShopifyOrder({ payment, lineItems, email, ship, shipping })
         return li_obj;
       }),
       email: email || undefined,
+      send_receipt: true,                  // email the buyer Shopify's order confirmation
       financial_status: "paid",
       source_name: "whop",
       tags: "Whop",
