@@ -115,13 +115,18 @@ app.get("/.well-known/apple-developer-merchantid-domain-association", async (_re
 // ============================================================================
 app.post("/checkout/create", express.json(), async (req, res) => {
   try {
-    const { items = [], cartToken = null, email = null } = req.body;
+    const { items = [], cartToken = null, email = null, cartTotal = null } = req.body;
     if (!items.length) return res.status(400).json({ error: "empty cart" });
 
-    const total = items.reduce(
-      (sum, it) => sum + Number(it.price) * Number(it.quantity || 1),
-      0
-    );
+    // Charge the cart's REAL total AFTER discounts (Buy 2 Get 1, automatic
+    // discounts, etc.). Prefer the exact discounted total the storefront sends;
+    // otherwise sum the discounted per-line prices; only as a last resort fall
+    // back to unit price x quantity (legacy snippet that didn't send discounts).
+    const total = (cartTotal != null && Number(cartTotal) > 0)
+      ? Number(cartTotal)
+      : items.reduce((sum, it) => sum +
+          (it.linePrice != null ? Number(it.linePrice)
+                                : Number(it.price) * Number(it.quantity || 1)), 0);
 
     // A Whop checkout for the SUBTOTAL (shipping is added at /checkout/finalize
     // once the buyer picks a rate). This plan id is our cart key for the address
@@ -156,7 +161,10 @@ app.post("/checkout/create", express.json(), async (req, res) => {
         variant_id: it.variantId,
         quantity: it.quantity || 1,
         title: it.title || "",
-        price: Number(it.price) || 0,
+        price: Number(it.price) || 0,                 // discounted per-unit price
+        linePrice: it.linePrice != null              // discounted line total
+          ? Number(it.linePrice)
+          : (Number(it.price) || 0) * (Number(it.quantity) || 1),
         compareAt: Number(compareMap[String(it.variantId)]) || 0,
         image: it.image || "",
       })),
@@ -792,10 +800,19 @@ async function createShopifyOrder({ payment, lineItems, email, ship, shipping })
   txAmount = Math.round((Number(txAmount) || 0) * 100) / 100;
   const order = {
     order: {
-      line_items: lineItems.map((li) => ({
-        variant_id: Number(li.variant_id),
-        quantity: Number(li.quantity) || 1,
-      })),
+      line_items: lineItems.map((li) => {
+        const qty = Number(li.quantity) || 1;
+        const li_obj = { variant_id: Number(li.variant_id), quantity: qty };
+        // Override the line price with the DISCOUNTED unit price so the Shopify
+        // order total matches what Whop actually charged. Without this, Shopify
+        // bills the full variant price (e.g. 3x$34.99) and marks the order
+        // "partially paid" even though the bundle (Buy 2 Get 1) was $69.99.
+        let unit = null;
+        if (li.linePrice != null && qty) unit = Number(li.linePrice) / qty;
+        else if (li.price != null) unit = Number(li.price);
+        if (unit != null && unit >= 0 && isFinite(unit)) li_obj.price = unit.toFixed(2);
+        return li_obj;
+      }),
       email: email || undefined,
       financial_status: "paid",
       source_name: "whop",
