@@ -461,6 +461,9 @@ a{color:inherit}
 #whop-embedded-checkout{min-height:300px}
 .pay-section{margin-top:2px}
 .pay-frame{width:100%;border:0;min-height:300px;display:block;background:transparent}
+.pay-frames{position:relative}
+.pf-incoming{position:absolute;left:0;top:0;width:100%;opacity:0;pointer-events:none}
+.pf-hide{display:none}
 .pay-loading{padding:22px 2px;color:#8a8a8a;font-size:14px}
 .cta{width:100%;padding:15px;border:0;border-radius:8px;background:${BRAND_ACCENT};color:#fff;font-size:16px;font-weight:600;cursor:pointer;margin-top:14px;transition:opacity .15s}
 .cta:hover{opacity:.88}.cta:disabled{opacity:.45;cursor:default}
@@ -661,7 +664,10 @@ window.addEventListener('load',function(){sendHeight();setTimeout(sendHeight,600
       <div id="paySection" class="pay-section">
         <div class="sf-paylabel">Contact &amp; payment</div>
         <div id="payLoading" class="pay-loading">Loading secure payment…</div>
-        <iframe id="payFrame" class="pay-frame" allow="payment *" style="display:none" title="Payment"></iframe>
+        <div id="payFrames" class="pay-frames">
+          <iframe id="payFrame" class="pay-frame pf-hide" allow="payment *" title="Payment"></iframe>
+          <iframe id="payFrame2" class="pay-frame pf-hide" allow="payment *" title="Payment"></iframe>
+        </div>
       </div>
     </div></main>
     <aside class="col-side"><div class="inner">${summary}</div></aside>
@@ -680,7 +686,9 @@ window.addEventListener('load',function(){sendHeight();setTimeout(sendHeight,600
 var form=document.getElementById('shipForm');
 var box=document.getElementById('shipMethods');
 var paySection=document.getElementById('paySection');
-var payFrame=document.getElementById('payFrame');
+var frames=[document.getElementById('payFrame'),document.getElementById('payFrame2')];
+var activeIdx=0;
+var payFrame=frames[0];   // always points at the visible/active payment frame
 var payLoading=document.getElementById('payLoading');
 var REQ=['sf_fname','sf_lname','sf_line1','sf_city','sf_state','sf_zip'];
 var rates=[], selIdx=-1, ratesKey='', ratesLoading=false, finalizeKey='', payMode='', revealDeb, deb;
@@ -716,9 +724,7 @@ function previewUrl(){ return ORIGIN+'/c?plan='+encodeURIComponent(PLAN)+'&sessi
 function showPreview(){
   if(payMode==='preview') return;        // already showing the preview frame
   payMode='preview'; finalizeKey='';
-  payLoading.style.display='block'; payLoading.textContent='Loading secure payment…';
-  payFrame.style.display='none';
-  payFrame.src=previewUrl();
+  loadPay(previewUrl());
 }
 function renderRates(list){
   rates=list||[]; selIdx = rates.length?0:-1;
@@ -762,20 +768,54 @@ async function doFinalize(){
   var key=[addr.name,addr.line1,addr.line2,addr.city,addr.state,addr.postalCode,rates[selIdx].handle].join('|');
   if(key===finalizeKey && payMode===key) return;   // already mounted for this exact selection
   finalizeKey=key;
-  payLoading.style.display='block'; payLoading.textContent='Updating total…'; payFrame.style.display='none';
   try{
     var resp=await fetch(ORIGIN+'/checkout/finalize',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({plan:PLAN,address:addr,handle:rates[selIdx].handle,title:rates[selIdx].title})}).then(function(x){return x.json();});
     if(!resp||!resp.plan)throw new Error('finalize');
     if(finalizeKey!==key) return;
     payMode=key;                                    // live, payable frame for subtotal+shipping
-    payFrame.src=ORIGIN+'/c?plan='+encodeURIComponent(resp.plan)+'&session='+encodeURIComponent(resp.session||'')+'&embed=1';
-  }catch(e){ payLoading.textContent='Could not load payment — please try again.'; finalizeKey=''; payMode=''; }
+    loadPay(ORIGIN+'/c?plan='+encodeURIComponent(resp.plan)+'&session='+encodeURIComponent(resp.session||'')+'&embed=1');
+  }catch(e){ finalizeKey=''; payMode=''; }
 }
-payFrame.addEventListener('load',function(){ try{ if(payFrame.src && payFrame.src.indexOf('embed=1')>-1){ payFrame.style.display='block'; payLoading.style.display='none'; } }catch(e){} });
+// ---- Seamless payment swap: load the new total into the spare frame (rendered
+// but invisible), then swap it in once ready, so the bottom half never blanks. ----
+function activate(fr){
+  fr.__incoming=false;
+  fr.className='pay-frame';                          // visible, in normal flow
+  var prev=frames[0]===fr?frames[1]:frames[0];
+  if(prev && prev!==fr) prev.className='pay-frame pf-hide';
+  activeIdx=frames[0]===fr?0:1;
+  payFrame=fr;
+  payLoading.style.display='none';
+}
+function payVisible(){ var f=frames[activeIdx]; return f && f.className.indexOf('pf-hide')<0 && f.className.indexOf('pf-incoming')<0; }
+function loadPay(url){
+  if(!payVisible()){
+    // First payment on screen: show the loader until this frame is ready.
+    var f0=frames[activeIdx];
+    payLoading.style.display='block';
+    f0.__incoming=false;
+    f0.src=url;
+    return;
+  }
+  // A frame is already visible — load the new total into the spare frame,
+  // rendered but invisible, and only swap it in once it has loaded.
+  var loader=frames[1-activeIdx];
+  loader.__incoming=true;
+  loader.className='pay-frame pf-incoming';
+  clearTimeout(loader.__t);
+  loader.src=url;
+}
+frames.forEach(function(fr){
+  fr.addEventListener('load',function(){
+    if(!(fr.src && fr.src.indexOf('embed=1')>-1)) return;
+    if(fr.__incoming){ clearTimeout(fr.__t); fr.__t=setTimeout(function(){ activate(fr); },400); }
+    else { activate(fr); }
+  });
+});
 window.addEventListener('message',function(e){
   if(e.origin!==ORIGIN) return;
   var d=e.data||{};
-  if(d.type==='wh-height' && d.h){ payFrame.style.height=(Number(d.h)+6)+'px'; }
+  if(d.type==='wh-height' && d.h){ for(var _i=0;_i<frames.length;_i++){ if(e.source===frames[_i].contentWindow){ frames[_i].style.height=(Number(d.h)+6)+'px'; break; } } }
   else if(d.type==='wh-need-address'){
     // Buyer clicked the locked preview button — send them to the first missing field.
     markInvalid();
