@@ -471,9 +471,8 @@ a{color:inherit}
 .col-side.open .os-toggle .chev{transform:rotate(180deg)}
 .badges{margin-top:22px;padding-top:18px;border-top:1px solid #ededed;display:flex;flex-wrap:wrap;gap:10px 16px;font-size:12.5px;color:#777}
 .badges span{display:flex;align-items:center;gap:5px}
-.pay-accept{display:flex;flex-wrap:wrap;align-items:center;gap:7px;margin:2px 0 16px}
-.pay-accept .pa-lbl{font-size:12.5px;color:#8a8a8a;margin-right:3px;font-weight:600}
-.pay-accept .pa-card{font-size:10.5px;font-weight:700;letter-spacing:.02em;color:#3a3a3a;background:#fff;border:1px solid #e0e0e0;border-radius:5px;padding:4px 7px;line-height:1;white-space:nowrap}
+.pay-cards{display:flex;flex-wrap:wrap;align-items:center;gap:6px;margin:6px 0 18px}
+.pay-cards svg{display:block}
 @media(max-width:820px){
   .page{flex-direction:column;min-height:0}
   .col-main,.col-side{display:block;flex:none}
@@ -587,7 +586,7 @@ window.addEventListener('load',function(){sendHeight();setTimeout(sendHeight,600
       <div id="shipMethods" class="ship-methods"><div class="ship-note">Enter your shipping address to see available shipping methods.</div></div>
       <div id="paySection" class="pay-section">
         <div class="sf-paylabel">Contact &amp; payment</div>
-        <div class="pay-accept"><span class="pa-lbl">We accept</span><span class="pa-card">VISA</span><span class="pa-card">Mastercard</span><span class="pa-card">AMEX</span><span class="pa-card">Discover</span><span class="pa-card">Apple&nbsp;Pay</span><span class="pa-card">Google&nbsp;Pay</span><span class="pa-card">Cash&nbsp;App</span></div>
+        <div class="pay-cards" aria-label="Accepted payment methods"><svg width="44" height="28" viewBox="0 0 44 28"><rect x=".5" y=".5" width="43" height="27" rx="4" fill="#fff" stroke="#E6E6E6"/><text x="22" y="18.5" font-family="Arial,Helvetica,sans-serif" font-size="12.5" font-weight="800" font-style="italic" fill="#1A1F71" text-anchor="middle">VISA</text></svg><svg width="44" height="28" viewBox="0 0 44 28"><rect x=".5" y=".5" width="43" height="27" rx="4" fill="#fff" stroke="#E6E6E6"/><circle cx="18.5" cy="14" r="7" fill="#EB001B"/><circle cx="25.5" cy="14" r="7" fill="#F79E1B"/></svg><svg width="44" height="28" viewBox="0 0 44 28"><rect width="44" height="28" rx="4.5" fill="#1F72CD"/><text x="22" y="17.5" font-family="Arial,Helvetica,sans-serif" font-size="9" font-weight="800" fill="#fff" text-anchor="middle">AMEX</text></svg><svg width="44" height="28" viewBox="0 0 44 28"><rect x=".5" y=".5" width="43" height="27" rx="4" fill="#fff" stroke="#E6E6E6"/><circle cx="33" cy="18.5" r="6" fill="#F26E21"/><text x="6" y="13" font-family="Arial,Helvetica,sans-serif" font-size="6.5" font-weight="800" fill="#222">DISCOVER</text></svg><svg width="40" height="28" viewBox="0 0 40 28"><rect x=".5" y=".5" width="39" height="27" rx="4" fill="#F4F4F5" stroke="#E6E6E6"/><text x="20" y="18" font-family="Arial,Helvetica,sans-serif" font-size="11" font-weight="700" fill="#6B7280" text-anchor="middle">+4</text></svg></div>
         <div id="payLoading" class="pay-loading">Loading secure payment…</div>
         <iframe id="payFrame" class="pay-frame" allow="payment *" style="display:none" title="Payment"></iframe>
       </div>
