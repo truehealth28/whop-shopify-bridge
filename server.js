@@ -429,6 +429,15 @@ a{color:inherit}
 .sf-row{display:flex;gap:10px}
 .sf-row .sf-in{flex:1;min-width:0}
 .sf-country{-webkit-appearance:auto;appearance:auto}
+.sf-ac{position:relative}
+.ac-list{position:absolute;left:0;right:0;top:calc(100% - 6px);background:#fff;border:1px solid #d9d9d9;border-radius:8px;box-shadow:0 8px 26px rgba(0,0,0,.13);z-index:60;overflow:hidden;display:none}
+.ac-list.show{display:block}
+.ac-item{padding:11px 13px;font-size:14px;color:#1a1a1a;cursor:pointer;border-bottom:1px solid #f1f1f1;display:flex;gap:9px;align-items:flex-start;line-height:1.35}
+.ac-item:last-child{border-bottom:0}
+.ac-item:hover,.ac-item.active{background:#f4f7fb}
+.ac-pin{flex:0 0 auto;font-size:13px;margin-top:1px}
+.ac-main{font-weight:600}
+.ac-sub{color:#8a8a8a;font-size:12.5px}
 .sf-err{color:#c0392b;font-size:13px;margin:-2px 0 8px;display:none}
 .shipform.invalid .sf-err{display:block}
 .shipform.invalid .sf-in.bad{border-color:#c0392b;box-shadow:0 0 0 1px #c0392b}
@@ -539,9 +548,12 @@ window.onWhopState=function(state){
 };
 window.onWhopComplete=async function(planId,receiptId){
   ${META_PIXEL_ID ? `try{fbq('track','Purchase',{value:${amount},currency:'USD'});}catch(e){}` : ""}
-  try{await fetch(ORIGIN+'/order-complete',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({planId:planId||'${plan}',receiptId:receiptId})})}catch(e){}
   post({type:'wh-complete'});
   if(parent===window){document.getElementById('pay-root').innerHTML='<div style="text-align:center;padding:50px 0"><div style="font-size:50px">✅</div><h2>Order confirmed</h2><p style="color:#555">Thank you! A confirmation is in your inbox.</p></div>';}
+  // Create the Shopify order in the BACKGROUND so the buyer sees their confirmation
+  // immediately. keepalive lets it finish even if the page changes; the Whop
+  // webhook is a fallback if this request is ever dropped.
+  try{fetch(ORIGIN+'/order-complete',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({planId:planId||'${plan}',receiptId:receiptId}),keepalive:true}).catch(function(){});}catch(e){}
 };
 try{new MutationObserver(sendHeight).observe(document.body,{childList:true,subtree:true,attributes:true});}catch(e){}
 window.addEventListener('load',function(){sendHeight();setTimeout(sendHeight,600);setTimeout(sendHeight,1500);setTimeout(sendHeight,3000);});
@@ -570,7 +582,7 @@ window.addEventListener('load',function(){sendHeight();setTimeout(sendHeight,600
       <form id="shipForm" class="shipform" onsubmit="return false">
         <h2 class="sf-h">Shipping address</h2>
         <input class="sf-in" id="sf_name" placeholder="Full name" autocomplete="name">
-        <input class="sf-in" id="sf_line1" placeholder="Address" autocomplete="address-line1">
+        <div class="sf-ac"><input class="sf-in" id="sf_line1" placeholder="Start typing your address…" autocomplete="off"><div class="ac-list" id="acList"></div></div>
         <input class="sf-in" id="sf_line2" placeholder="Apartment, suite, etc. (optional)" autocomplete="address-line2">
         <div class="sf-row">
           <input class="sf-in" id="sf_city" placeholder="City" autocomplete="address-level2">
@@ -700,6 +712,63 @@ REQ.concat(['sf_line2']).forEach(function(id){var el=document.getElementById(id)
   el.addEventListener('input',function(){el.classList.remove('bad');if(!form.querySelector('.bad'))form.classList.remove('invalid');clearTimeout(deb);deb=setTimeout(fetchRates,500);});
   el.addEventListener('change',function(){clearTimeout(deb);fetchRates();});
 }});
+
+// ---- Address autocomplete (free OpenStreetMap/Photon — type-ahead + autofill) ----
+(function(){
+  var acInput=document.getElementById('sf_line1');
+  var acList=document.getElementById('acList');
+  if(!acInput||!acList) return;
+  var US_STATES=${JSON.stringify(US_STATES)};
+  var STATE_BY_NAME={}; for(var _k in US_STATES){STATE_BY_NAME[US_STATES[_k].toLowerCase()]=_k;}
+  var acDeb,acItems=[],acActive=-1,acLast='';
+  function acHide(){acList.classList.remove('show');acList.innerHTML='';acActive=-1;}
+  function setV(id,v){var el=document.getElementById(id);if(el&&v){el.value=v;el.classList.remove('bad');}}
+  function esc(s){return String(s||'').replace(/[&<>"]/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c];});}
+  function acPick(it){
+    setV('sf_line1',it.line1); setV('sf_city',it.city); setV('sf_zip',it.zip);
+    if(it.stateCode){var sel=document.getElementById('sf_state');if(sel)sel.value=it.stateCode;}
+    acHide();
+    if(form && !form.querySelector('.bad'))form.classList.remove('invalid');
+    try{fetchRates();}catch(e){}
+  }
+  function acRender(){
+    if(!acItems.length){acHide();return;}
+    acList.innerHTML=acItems.map(function(it,i){return '<div class="ac-item'+(i===acActive?' active':'')+'" data-i="'+i+'"><span class="ac-pin">📍</span><span><span class="ac-main">'+esc(it.main)+'</span><br><span class="ac-sub">'+esc(it.sub)+'</span></span></div>';}).join('');
+    acList.classList.add('show');
+    [].forEach.call(acList.querySelectorAll('.ac-item'),function(el){el.addEventListener('mousedown',function(ev){ev.preventDefault();acPick(acItems[parseInt(el.getAttribute('data-i'),10)]);});});
+  }
+  function acSearch(q){
+    fetch('https://photon.komoot.io/api/?q='+encodeURIComponent(q)+'&limit=6&lang=en&lat=39.8&lon=-98.6').then(function(x){return x.json();}).then(function(r){
+      var feats=(r&&r.features)||[]; acItems=[];
+      feats.forEach(function(f){
+        var p=f.properties||{};
+        if(p.countrycode&&p.countrycode!=='US')return;
+        var street=((p.housenumber?p.housenumber+' ':'')+(p.street||p.name||'')).trim();
+        if(!street)return;
+        var city=p.city||p.town||p.village||p.county||'';
+        var stateCode=STATE_BY_NAME[(p.state||'').toLowerCase()]||'';
+        var zip=p.postcode||'';
+        acItems.push({line1:street,city:city,zip:zip,stateCode:stateCode,main:street,sub:[city,(stateCode||p.state||''),zip].filter(Boolean).join(', ')});
+      });
+      acActive=-1; acRender();
+    }).catch(function(){acHide();});
+  }
+  acInput.addEventListener('input',function(){
+    var q=acInput.value.trim(); if(q===acLast)return; acLast=q;
+    clearTimeout(acDeb);
+    if(q.length<4){acHide();return;}
+    acDeb=setTimeout(function(){acSearch(q);},260);
+  });
+  acInput.addEventListener('keydown',function(e){
+    if(!acList.classList.contains('show'))return;
+    if(e.key==='ArrowDown'){e.preventDefault();acActive=Math.min(acActive+1,acItems.length-1);acRender();}
+    else if(e.key==='ArrowUp'){e.preventDefault();acActive=Math.max(acActive-1,0);acRender();}
+    else if(e.key==='Enter'){if(acActive>=0){e.preventDefault();acPick(acItems[acActive]);}}
+    else if(e.key==='Escape'){acHide();}
+  });
+  acInput.addEventListener('blur',function(){setTimeout(acHide,160);});
+})();
+
 updateSummary();
 showPreview();   // mount the visible payment embed immediately on load (subtotal)
 </script>
