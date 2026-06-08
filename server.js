@@ -66,6 +66,10 @@ const STORE_URL = (ALLOWED_ORIGIN && ALLOWED_ORIGIN.indexOf("http") === 0) ? ALL
 // --- Hardening: persist in-flight carts to a Railway Volume so a restart or
 // redeploy between checkout and payment never drops an order. ---
 const CART_FILE = process.env.CART_FILE || "/data/carts.json";
+// Google Places (New) key — injected into the checkout page for client-side
+// address autocomplete. Stored ONLY as a Railway env var (never committed), and
+// the key is locked to the shoptruehealth.com domain. Empty -> free Photon.
+const GOOGLE_MAPS_KEY = process.env.GOOGLE_MAPS_API_KEY || "";
 try {
   const saved = JSON.parse(fs.readFileSync(CART_FILE, "utf8"));
   for (const [k, v] of Object.entries(saved)) cartByPlan.set(k, v);
@@ -680,6 +684,7 @@ var rates=[], selIdx=-1, ratesKey='', ratesLoading=false, finalizeKey='', payMod
 var SUBTOTAL=${subtotal};
 var ORIGIN='${HOST_URL}';
 var PLAN='${plan}';
+var GMAPS_KEY=${JSON.stringify(GOOGLE_MAPS_KEY)};
 var SESSION='${session}';
 function gv(id){var el=document.getElementById(id);return el?el.value.trim():'';}
 function readShip(){return {name:gv('sf_name'),country:'US',line1:gv('sf_line1'),line2:gv('sf_line2'),city:gv('sf_city'),state:gv('sf_state'),postalCode:gv('sf_zip')};}
@@ -779,7 +784,7 @@ REQ.concat(['sf_line2']).forEach(function(id){var el=document.getElementById(id)
   el.addEventListener('change',function(){clearTimeout(deb);fetchRates();});
 }});
 
-// ---- Address autocomplete (free OpenStreetMap/Photon — type-ahead + autofill) ----
+// ---- Address autocomplete (Google Places New when key is set, free Photon fallback) ----
 (function(){
   var acInput=document.getElementById('sf_line1');
   var acList=document.getElementById('acList');
@@ -790,12 +795,17 @@ REQ.concat(['sf_line2']).forEach(function(id){var el=document.getElementById(id)
   function acHide(){acList.classList.remove('show');acList.innerHTML='';acActive=-1;}
   function setV(id,v){var el=document.getElementById(id);if(el&&v){el.value=v;el.classList.remove('bad');}}
   function esc(s){return String(s||'').replace(/[&<>"]/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c];});}
-  function acPick(it){
-    setV('sf_line1',it.line1); setV('sf_city',it.city); setV('sf_zip',it.zip);
-    if(it.stateCode){var sel=document.getElementById('sf_state');if(sel)sel.value=it.stateCode;}
+  function fillAddr(o){
+    setV('sf_line1',o.line1); setV('sf_city',o.city); setV('sf_zip',o.zip);
+    if(o.stateCode){var sel=document.getElementById('sf_state');if(sel)sel.value=o.stateCode;}
     acHide();
     if(form && !form.querySelector('.bad'))form.classList.remove('invalid');
+    GSESSION=guid();   // fresh Places session token after each completed selection
     try{fetchRates();}catch(e){}
+  }
+  function acPick(it){
+    if(it.placeId){ gDetails(it.placeId, it.main); }  // Google: look up the full address
+    else { fillAddr(it); }                             // Photon: already has the parts
   }
   function acRender(){
     if(!acItems.length){acHide();return;}
@@ -803,7 +813,35 @@ REQ.concat(['sf_line2']).forEach(function(id){var el=document.getElementById(id)
     acList.classList.add('show');
     [].forEach.call(acList.querySelectorAll('.ac-item'),function(el){el.addEventListener('mousedown',function(ev){ev.preventDefault();acPick(acItems[parseInt(el.getAttribute('data-i'),10)]);});});
   }
-  function acSearch(q){
+  // Google Places (New). The session token bundles autocomplete+details into one
+  // cheap billable session. Any Google hiccup quietly falls back to free Photon.
+  function guid(){return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g,function(c){var r=Math.random()*16|0;return (c==='x'?r:(r&0x3|0x8)).toString(16);});}
+  var GSESSION=guid();
+  function gSearch(q){
+    fetch('https://places.googleapis.com/v1/places:autocomplete',{method:'POST',headers:{'Content-Type':'application/json','X-Goog-Api-Key':GMAPS_KEY},body:JSON.stringify({input:q,includedRegionCodes:['us'],sessionToken:GSESSION})})
+      .then(function(x){if(!x.ok)throw new Error('g'+x.status);return x.json();})
+      .then(function(d){
+        var sugs=(d&&d.suggestions)||[]; acItems=[];
+        sugs.forEach(function(s){var p=s.placePrediction; if(!p)return;
+          var sf=p.structuredFormat||{};
+          var main=(sf.mainText&&sf.mainText.text)||(p.text&&p.text.text)||'';
+          var sub=(sf.secondaryText&&sf.secondaryText.text)||'';
+          if(main)acItems.push({placeId:p.placeId,main:main,sub:sub});
+        });
+        acActive=-1; acRender();
+      }).catch(function(){ pSearch(q); });
+  }
+  function gDetails(placeId,fallbackMain){
+    fetch('https://places.googleapis.com/v1/places/'+encodeURIComponent(placeId)+'?sessionToken='+encodeURIComponent(GSESSION),{headers:{'X-Goog-Api-Key':GMAPS_KEY,'X-Goog-FieldMask':'addressComponents'}})
+      .then(function(x){return x.json();})
+      .then(function(d){
+        var comps=(d&&d.addressComponents)||[];
+        function g(t,w){for(var i=0;i<comps.length;i++){if((comps[i].types||[]).indexOf(t)>=0)return w==='short'?comps[i].shortText:comps[i].longText;}return '';}
+        var num=g('street_number'),route=g('route');
+        fillAddr({line1:((num?num+' ':'')+route).trim()||fallbackMain,city:g('locality')||g('postal_town')||g('sublocality')||g('administrative_area_level_2'),stateCode:g('administrative_area_level_1','short'),zip:g('postal_code')});
+      }).catch(function(){ fillAddr({line1:fallbackMain}); });
+  }
+  function pSearch(q){
     fetch('https://photon.komoot.io/api/?q='+encodeURIComponent(q)+'&limit=6&lang=en&lat=39.8&lon=-98.6').then(function(x){return x.json();}).then(function(r){
       var feats=(r&&r.features)||[]; acItems=[];
       feats.forEach(function(f){
@@ -819,6 +857,7 @@ REQ.concat(['sf_line2']).forEach(function(id){var el=document.getElementById(id)
       acActive=-1; acRender();
     }).catch(function(){acHide();});
   }
+  function acSearch(q){ if(GMAPS_KEY){gSearch(q);}else{pSearch(q);} }
   acInput.addEventListener('input',function(){
     var q=acInput.value.trim(); if(q===acLast)return; acLast=q;
     clearTimeout(acDeb);
