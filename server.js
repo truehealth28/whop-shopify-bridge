@@ -120,6 +120,7 @@ const LEGAL = {
   privacy: { title: "Privacy Policy", body: `<p>TrueHealthic respects your privacy. This policy explains what information we collect and how we use it.</p><h2>Information we collect</h2><p>When you place an order we collect the information needed to fulfill it: your name, shipping address, email address, and payment details. Payment details are handled securely by our payment processor and are never stored on our servers.</p><h2>How we use your information</h2><p>We use your information to process and ship your order, provide customer support, send order updates, and — where you've opted in — share offers and news. We do not sell your personal information.</p><h2>Sharing</h2><p>We share information only with the partners required to complete your order, such as our payment processor and shipping carriers, and only as needed to provide the service.</p><h2>Security</h2><p>All transactions are encrypted using industry-standard SSL. We take reasonable measures to protect your information.</p><h2>Your rights &amp; contact</h2><p>You may request access to, correction of, or deletion of your personal information at any time by emailing <a href="mailto:${LEGAL_EMAIL}">${LEGAL_EMAIL}</a>.</p>` },
   terms: { title: "Terms of Service", body: `<p>This website is operated by TrueHealthic. By visiting our site and/or purchasing from us, you agree to be bound by the following terms and conditions.</p><h2>Online store terms</h2><p>By agreeing to these terms, you represent that you are at least the age of majority in your state or province of residence. You may not use our products for any illegal or unauthorized purpose.</p><h2>Products &amp; pricing</h2><p>Product descriptions and pricing are subject to change at any time without notice. We reserve the right to limit quantities or refuse any order at our sole discretion.</p><h2>Health disclaimer</h2><p>These statements have not been evaluated by the Food and Drug Administration. Our products are not intended to diagnose, treat, cure, or prevent any disease. Consult your physician before starting any supplement.</p><h2>Payment</h2><p>By submitting your payment information you authorize us to charge the applicable amount to your selected payment method. All payments are processed securely.</p><h2>Changes to these terms</h2><p>We may update these terms at any time by posting changes to this page. Continued use of the site constitutes acceptance of those changes.</p><h2>Contact</h2><p>Questions about these Terms of Service can be sent to <a href="mailto:${LEGAL_EMAIL}">${LEGAL_EMAIL}</a>.</p>` },
   cancellations: { title: "Cancellation Policy", body: `<p>Need to cancel? We process orders quickly, so please contact us as soon as possible.</p><h2>How to cancel</h2><p>To cancel an order, email <a href="mailto:${LEGAL_EMAIL}">${LEGAL_EMAIL}</a> with your order number within <strong>24 hours</strong> of placing it. If your order has not yet shipped, we'll cancel it and issue a full refund.</p><h2>After your order ships</h2><p>If your order has already shipped, it can't be canceled — but you're still fully covered by our 90-Day Money-Back Guarantee. Simply return it under our <a href="${HOST_URL}/legal/refund">Refund Policy</a>.</p><h2>Questions</h2><p>We're happy to help at <a href="mailto:${LEGAL_EMAIL}">${LEGAL_EMAIL}</a>.</p>` },
+  contact: { title: "Contact Us", body: `<p>Questions about your order or our products? We're here to help.</p><p>Email us anytime at <a href="mailto:${LEGAL_EMAIL}">${LEGAL_EMAIL}</a> and our team will get back to you within 24 hours, 7 days a week.</p>` },
 };
 function legalPage(p){
   return `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${p.title} — ${BRAND_NAME}</title>
@@ -508,6 +509,18 @@ a{color:inherit}
 .ck-foot{max-width:1000px;margin:0 auto;padding:24px 20px 40px;display:flex;flex-wrap:wrap;gap:9px 22px;justify-content:center;border-top:1px solid #ededed}
 .ck-foot a{color:#8a8a8a;font-size:13px;text-decoration:none}
 .ck-foot a:hover{color:#16264a;text-decoration:underline}
+.pol-overlay{position:fixed;inset:0;background:rgba(0,0,0,.5);display:none;align-items:flex-start;justify-content:center;z-index:2000;padding:40px 16px;overflow-y:auto;-webkit-overflow-scrolling:touch}
+.pol-overlay.show{display:flex}
+.pol-modal{background:#fff;border-radius:12px;max-width:560px;width:100%;padding:32px 32px 38px;position:relative;box-shadow:0 24px 70px rgba(0,0,0,.32);margin:auto}
+.pol-x{position:absolute;top:14px;right:15px;background:none;border:0;font-size:27px;line-height:1;color:#999;cursor:pointer;padding:4px 8px;border-radius:8px}
+.pol-x:hover{color:#222;background:#f3f3f3}
+.pol-title{font-size:23px;font-weight:700;margin:0 0 8px;color:#111;padding-right:30px}
+.pol-body{color:#454545;line-height:1.7;font-size:14.5px}
+.pol-body h2{font-size:16px;font-weight:700;margin:20px 0 4px;color:#1a1a1a}
+.pol-body p{margin:9px 0}
+.pol-body ul,.pol-body ol{margin:9px 0;padding-left:22px}
+.pol-body li{margin:4px 0}
+.pol-body a{color:#16264a}
 @media(max-width:820px){
   .page{flex-direction:column;min-height:0}
   .col-main,.col-side{display:block;flex:none}
@@ -591,6 +604,7 @@ window.addEventListener('load',function(){sendHeight();setTimeout(sendHeight,600
   }
 
   // ---------- ADDRESS + SHIPPING STEP ----------
+  const policiesJson = JSON.stringify(LEGAL).replace(/</g, "\\u003c");
   const summary = `
       <button type="button" class="os-toggle" onclick="this.closest('.col-side').classList.toggle('open')"><span class="os-toggle-l">Order summary <span class="chev">⌄</span></span><span class="os-toggle-r" id="toggleTotal">${money(subtotal)}</span></button>
       <div class="os-body">
@@ -631,13 +645,14 @@ window.addEventListener('load',function(){sendHeight();setTimeout(sendHeight,600
     <aside class="col-side"><div class="inner">${summary}</div></aside>
   </div>
   <footer class="ck-foot">
-    <a href="${HOST_URL}/legal/refund">Refund policy</a>
-    <a href="${HOST_URL}/legal/shipping">Shipping policy</a>
-    <a href="${HOST_URL}/legal/privacy">Privacy policy</a>
-    <a href="${HOST_URL}/legal/terms">Terms of service</a>
-    <a href="${HOST_URL}/legal/cancellations">Cancellations</a>
-    <a href="mailto:support@shoptruehealth.com">Contact</a>
+    <a href="${HOST_URL}/legal/refund" data-pol="refund">Refund policy</a>
+    <a href="${HOST_URL}/legal/shipping" data-pol="shipping">Shipping policy</a>
+    <a href="${HOST_URL}/legal/privacy" data-pol="privacy">Privacy policy</a>
+    <a href="${HOST_URL}/legal/terms" data-pol="terms">Terms of service</a>
+    <a href="${HOST_URL}/legal/cancellations" data-pol="cancellations">Cancellations</a>
+    <a href="${HOST_URL}/legal/contact" data-pol="contact">Contact</a>
   </footer>
+  <div id="polOverlay" class="pol-overlay"><div class="pol-modal"><button class="pol-x" id="polX" aria-label="Close">&times;</button><h2 class="pol-title" id="polTitle"></h2><div class="pol-body" id="polBody"></div></div></div>
 </div>
 <script>
 var form=document.getElementById('shipForm');
@@ -803,6 +818,23 @@ REQ.concat(['sf_line2']).forEach(function(id){var el=document.getElementById(id)
     else if(e.key==='Escape'){acHide();}
   });
   acInput.addEventListener('blur',function(){setTimeout(acHide,160);});
+})();
+
+// ---- Policy popups: open Refund/Shipping/Privacy/Terms/Cancellations/Contact
+// in a modal over the checkout instead of navigating to a separate page ----
+var POLICIES = ${policiesJson};
+(function(){
+  var ov=document.getElementById('polOverlay');
+  if(!ov) return;
+  var pt=document.getElementById('polTitle'), pb=document.getElementById('polBody'), px=document.getElementById('polX');
+  function openPol(slug){var p=POLICIES[slug];if(!p)return;pt.textContent=p.title;pb.innerHTML=p.body;ov.classList.add('show');document.body.style.overflow='hidden';ov.scrollTop=0;}
+  function closePol(){ov.classList.remove('show');document.body.style.overflow='';}
+  document.querySelectorAll('[data-pol]').forEach(function(a){a.addEventListener('click',function(e){e.preventDefault();openPol(a.getAttribute('data-pol'));});});
+  px.addEventListener('click',closePol);
+  ov.addEventListener('click',function(e){if(e.target===ov)closePol();});
+  document.addEventListener('keydown',function(e){if(e.key==='Escape')closePol();});
+  // links inside a policy (e.g. Cancellations -> Refund) also open in the modal
+  pb.addEventListener('click',function(e){var a=e.target.closest&&e.target.closest('a[href*="/legal/"]');if(!a)return;var m=a.getAttribute('href').match(/\\/legal\\/([a-z]+)/);if(m&&POLICIES[m[1]]){e.preventDefault();openPol(m[1]);}});
 })();
 
 updateSummary();
