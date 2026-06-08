@@ -471,6 +471,9 @@ a{color:inherit}
 .col-side.open .os-toggle .chev{transform:rotate(180deg)}
 .badges{margin-top:22px;padding-top:18px;border-top:1px solid #ededed;display:flex;flex-wrap:wrap;gap:10px 16px;font-size:12.5px;color:#777}
 .badges span{display:flex;align-items:center;gap:5px}
+.pay-accept{display:flex;flex-wrap:wrap;align-items:center;gap:7px;margin:2px 0 16px}
+.pay-accept .pa-lbl{font-size:12.5px;color:#8a8a8a;margin-right:3px;font-weight:600}
+.pay-accept .pa-card{font-size:10.5px;font-weight:700;letter-spacing:.02em;color:#3a3a3a;background:#fff;border:1px solid #e0e0e0;border-radius:5px;padding:4px 7px;line-height:1;white-space:nowrap}
 @media(max-width:820px){
   .page{flex-direction:column;min-height:0}
   .col-main,.col-side{display:block;flex:none}
@@ -522,7 +525,7 @@ var ORIGIN='${HOST_URL}';
 var PREVIEW=${previewMode ? "true" : "false"};
 var btn=document.getElementById('placeOrder');
 function post(m){try{parent.postMessage(m,ORIGIN);}catch(e){}}
-function sendHeight(){post({type:'wh-height',h:Math.max(document.body.scrollHeight,document.documentElement.scrollHeight)});}
+function sendHeight(){var last=document.querySelector('.trust')||document.getElementById('placeOrder')||document.body;var h=Math.ceil(last.getBoundingClientRect().bottom+window.scrollY+4);post({type:'wh-height',h:h});}
 btn.addEventListener('click',function(){
   // Preview frame can't take payment — it has no shipping/address yet. Nudge the
   // buyer up to the address form instead of submitting a shipping-less charge.
@@ -584,6 +587,7 @@ window.addEventListener('load',function(){sendHeight();setTimeout(sendHeight,600
       <div id="shipMethods" class="ship-methods"><div class="ship-note">Enter your shipping address to see available shipping methods.</div></div>
       <div id="paySection" class="pay-section">
         <div class="sf-paylabel">Contact &amp; payment</div>
+        <div class="pay-accept"><span class="pa-lbl">We accept</span><span class="pa-card">VISA</span><span class="pa-card">Mastercard</span><span class="pa-card">AMEX</span><span class="pa-card">Discover</span><span class="pa-card">Apple&nbsp;Pay</span><span class="pa-card">Google&nbsp;Pay</span><span class="pa-card">Cash&nbsp;App</span></div>
         <div id="payLoading" class="pay-loading">Loading secure payment…</div>
         <iframe id="payFrame" class="pay-frame" allow="payment *" style="display:none" title="Payment"></iframe>
       </div>
