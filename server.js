@@ -115,11 +115,11 @@ app.get("/.well-known/apple-developer-merchantid-domain-association", async (_re
 // ============================================================================
 const LEGAL_EMAIL = "support@shoptruehealth.com";
 const LEGAL = {
-  refund: { title: "Refund Policy", body: `<p>We stand behind every TrueHealthic product with a <strong>90-Day Money-Back Guarantee</strong>. If you are not completely satisfied with your purchase, we will make it right.</p><h2>Returns &amp; refunds</h2><p>You have 90 days from the date of delivery to request a refund. Simply email us at <a href="mailto:${LEGAL_EMAIL}">${LEGAL_EMAIL}</a> with your order number — opened or unopened, your satisfaction is covered.</p><p>Once your request is approved, your refund is issued to your original payment method within 5–10 business days. You'll receive an email confirmation once it has been processed.</p><h2>Late or missing refunds</h2><p>If you haven't received your refund after 10 business days, please check with your bank or card provider first, as processing times vary. If you still need help, contact us at <a href="mailto:${LEGAL_EMAIL}">${LEGAL_EMAIL}</a>.</p><h2>Damaged or wrong items</h2><p>If your order arrives damaged or incorrect, email us within 30 days of delivery with a photo and your order number and we'll send a replacement or full refund at no cost to you.</p>` },
-  shipping: { title: "Shipping Policy", body: `<p>We're proud to ship TrueHealthic orders quickly from within the USA.</p><h2>Processing time</h2><p>Orders are processed within 1–2 business days (Monday–Friday, excluding holidays). You'll receive a confirmation email with tracking as soon as your order ships.</p><h2>Delivery time</h2><p>Standard delivery within the United States typically takes 5–9 business days after processing. Expedited options, when available, are shown at checkout.</p><h2>Shipping rates</h2><p>Shipping is calculated at checkout based on your address. Orders over the threshold shown in your cart qualify for free standard shipping.</p><h2>Tracking</h2><p>A tracking number is emailed to you once your order ships. If you haven't received tracking within 3 business days, email us at <a href="mailto:${LEGAL_EMAIL}">${LEGAL_EMAIL}</a>.</p><h2>Questions</h2><p>For any shipping questions, reach us at <a href="mailto:${LEGAL_EMAIL}">${LEGAL_EMAIL}</a>.</p>` },
+  refund: { title: "Refund Policy", body: `<p>We stand behind every TrueHealthic product with a <strong>60-Day Money-Back Guarantee</strong>. If you are not completely satisfied with your purchase, we will make it right.</p><h2>Returns &amp; refunds</h2><p>You have 60 days from the date of delivery to request a refund. Simply email us at <a href="mailto:${LEGAL_EMAIL}">${LEGAL_EMAIL}</a> with your order number — opened or unopened, your satisfaction is covered.</p><p>Once your request is approved, your refund is issued to your original payment method within 5–10 business days. You'll receive an email confirmation once it has been processed.</p><h2>Late or missing refunds</h2><p>If you haven't received your refund after 10 business days, please check with your bank or card provider first, as processing times vary. If you still need help, contact us at <a href="mailto:${LEGAL_EMAIL}">${LEGAL_EMAIL}</a>.</p><h2>Damaged or wrong items</h2><p>If your order arrives damaged or incorrect, email us within 30 days of delivery with a photo and your order number and we'll send a replacement or full refund at no cost to you.</p>` },
+  shipping: { title: "Shipping Policy", body: `<p>We're proud to ship TrueHealthic orders quickly from within the USA.</p><h2>Processing time</h2><p>Orders are processed within 1–2 business days (Monday–Friday, excluding holidays). You'll receive a confirmation email with tracking as soon as your order ships.</p><h2>Delivery time</h2><p>Standard Shipping within the United States typically arrives in <strong>10–14 business days</strong>. Priority Processing (Expedited Shipping) typically arrives in <strong>4–7 business days</strong>. Your available shipping options and rates are shown at checkout.</p><h2>Shipping rates</h2><p>Shipping is calculated at checkout based on your address. Orders over the threshold shown in your cart qualify for free standard shipping.</p><h2>Tracking</h2><p>A tracking number is emailed to you once your order ships. If you haven't received tracking within 3 business days, email us at <a href="mailto:${LEGAL_EMAIL}">${LEGAL_EMAIL}</a>.</p><h2>Questions</h2><p>For any shipping questions, reach us at <a href="mailto:${LEGAL_EMAIL}">${LEGAL_EMAIL}</a>.</p>` },
   privacy: { title: "Privacy Policy", body: `<p>TrueHealthic respects your privacy. This policy explains what information we collect and how we use it.</p><h2>Information we collect</h2><p>When you place an order we collect the information needed to fulfill it: your name, shipping address, email address, and payment details. Payment details are handled securely by our payment processor and are never stored on our servers.</p><h2>How we use your information</h2><p>We use your information to process and ship your order, provide customer support, send order updates, and — where you've opted in — share offers and news. We do not sell your personal information.</p><h2>Sharing</h2><p>We share information only with the partners required to complete your order, such as our payment processor and shipping carriers, and only as needed to provide the service.</p><h2>Security</h2><p>All transactions are encrypted using industry-standard SSL. We take reasonable measures to protect your information.</p><h2>Your rights &amp; contact</h2><p>You may request access to, correction of, or deletion of your personal information at any time by emailing <a href="mailto:${LEGAL_EMAIL}">${LEGAL_EMAIL}</a>.</p>` },
   terms: { title: "Terms of Service", body: `<p>This website is operated by TrueHealthic. By visiting our site and/or purchasing from us, you agree to be bound by the following terms and conditions.</p><h2>Online store terms</h2><p>By agreeing to these terms, you represent that you are at least the age of majority in your state or province of residence. You may not use our products for any illegal or unauthorized purpose.</p><h2>Products &amp; pricing</h2><p>Product descriptions and pricing are subject to change at any time without notice. We reserve the right to limit quantities or refuse any order at our sole discretion.</p><h2>Health disclaimer</h2><p>These statements have not been evaluated by the Food and Drug Administration. Our products are not intended to diagnose, treat, cure, or prevent any disease. Consult your physician before starting any supplement.</p><h2>Payment</h2><p>By submitting your payment information you authorize us to charge the applicable amount to your selected payment method. All payments are processed securely.</p><h2>Changes to these terms</h2><p>We may update these terms at any time by posting changes to this page. Continued use of the site constitutes acceptance of those changes.</p><h2>Contact</h2><p>Questions about these Terms of Service can be sent to <a href="mailto:${LEGAL_EMAIL}">${LEGAL_EMAIL}</a>.</p>` },
-  cancellations: { title: "Cancellation Policy", body: `<p>Need to cancel? We process orders quickly, so please contact us as soon as possible.</p><h2>How to cancel</h2><p>To cancel an order, email <a href="mailto:${LEGAL_EMAIL}">${LEGAL_EMAIL}</a> with your order number within <strong>24 hours</strong> of placing it. If your order has not yet shipped, we'll cancel it and issue a full refund.</p><h2>After your order ships</h2><p>If your order has already shipped, it can't be canceled — but you're still fully covered by our 90-Day Money-Back Guarantee. Simply return it under our <a href="${HOST_URL}/legal/refund">Refund Policy</a>.</p><h2>Questions</h2><p>We're happy to help at <a href="mailto:${LEGAL_EMAIL}">${LEGAL_EMAIL}</a>.</p>` },
+  cancellations: { title: "Cancellation Policy", body: `<p>Need to cancel? We process orders quickly, so please contact us as soon as possible.</p><h2>How to cancel</h2><p>To cancel an order, email <a href="mailto:${LEGAL_EMAIL}">${LEGAL_EMAIL}</a> with your order number within <strong>24 hours</strong> of placing it. If your order has not yet shipped, we'll cancel it and issue a full refund.</p><h2>After your order ships</h2><p>If your order has already shipped, it can't be canceled — but you're still fully covered by our 60-Day Money-Back Guarantee. Simply return it under our <a href="${HOST_URL}/legal/refund">Refund Policy</a>.</p><h2>Questions</h2><p>We're happy to help at <a href="mailto:${LEGAL_EMAIL}">${LEGAL_EMAIL}</a>.</p>` },
   contact: { title: "Contact Us", body: `<p>Questions about your order or our products? We're here to help.</p><p>Email us anytime at <a href="mailto:${LEGAL_EMAIL}">${LEGAL_EMAIL}</a> and our team will get back to you within 24 hours, 7 days a week.</p>` },
 };
 function legalPage(p){
@@ -269,15 +269,30 @@ async function liveShopifyRates(lineItems, address) {
   return { rates };
 }
 
+// Customer-facing names for the shipping options. Standard -> "Standard
+// Shipping", any fast/expedited option -> "Priority Processing (Expedited
+// Shipping)". Free options keep their own wording (prices are never changed).
+function displayShippingTitle(title, price) {
+  if (Number(price) === 0) return title; // leave free shipping as-is
+  if (/express|expedited|priority|overnight|rush|next.?day|2.?day|fast/i.test(String(title || ""))) {
+    return "Priority Processing (Expedited Shipping)";
+  }
+  return "Standard Shipping";
+}
+function relabelRates(rates) {
+  return (rates || []).map((r) => ({ ...r, title: displayShippingTitle(r.title, r.price) }));
+}
+
 // Prefer live Shopify rates; fall back to the configured table so the checkout
-// never blocks if the live lookup is unavailable.
+// never blocks if the live lookup is unavailable. Titles are normalized to the
+// customer-facing names; handle + price are preserved so finalize still matches.
 async function shopifyShippingRates(lineItems, address) {
   const subtotal = (lineItems || []).reduce((s, li) => s + (Number(li.price) || 0) * (Number(li.quantity) || 1), 0);
   try {
     const live = await liveShopifyRates(lineItems, address);
-    if (live.rates.length) return live.rates;
+    if (live.rates.length) return relabelRates(live.rates);
   } catch (e) { console.error("[rates] live lookup threw", e.message); }
-  return builtinRates(subtotal);
+  return relabelRates(builtinRates(subtotal));
 }
 
 app.post("/shipping/rates", express.json(), async (req, res) => {
@@ -540,7 +555,7 @@ a{color:inherit}
   const savingsHtml = savings > 0.001
     ? `<div class="os-savings"><span class="os-savings-tag">🏷️ TOTAL SAVINGS</span><span>${money(savings)}</span></div>`
     : "";
-  const badges = `<div class="badges"><span>🇺🇸 Made in USA</span><span>✓ GMP Certified</span><span>✓ 90-Day Money-Back</span></div>`;
+  const badges = `<div class="badges"><span>🇺🇸 Made in USA</span><span>✓ GMP Certified</span><span>✓ 60-Day Money-Back</span></div>`;
 
   if (embedMode) {
     // ---- MINIMAL PAYMENT FRAME (rendered inside the inline frame on /c) ----
