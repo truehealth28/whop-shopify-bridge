@@ -817,7 +817,7 @@ REQ.concat(['sf_line2']).forEach(function(id){var el=document.getElementById(id)
   }
   function acRender(){
     if(!acItems.length){acHide();return;}
-    acList.innerHTML=acItems.map(function(it,i){return '<div class="ac-item'+(i===acActive?' active':'')+'" data-i="'+i+'"><span class="ac-pin">📍</span><span><span class="ac-main">'+esc(it.main)+'</span><br><span class="ac-sub">'+esc(it.sub)+'</span></span></div>';}).join('');
+    acList.innerHTML=acItems.map(function(it,i){return '<div class="ac-item'+(i===acActive?' active':'')+'" data-i="'+i+'"><span><span class="ac-main">'+esc(it.main)+'</span><br><span class="ac-sub">'+esc(it.sub)+'</span></span></div>';}).join('');
     acList.classList.add('show');
     [].forEach.call(acList.querySelectorAll('.ac-item'),function(el){el.addEventListener('mousedown',function(ev){ev.preventDefault();acPick(acItems[parseInt(el.getAttribute('data-i'),10)]);});});
   }
