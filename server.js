@@ -642,7 +642,10 @@ window.addEventListener('load',function(){sendHeight();setTimeout(sendHeight,600
     <main class="col-main"><div class="inner">
       <form id="shipForm" class="shipform" onsubmit="return false">
         <h2 class="sf-h">Shipping address</h2>
-        <input class="sf-in" id="sf_name" placeholder="Full name" autocomplete="name">
+        <div class="sf-row">
+          <input class="sf-in" id="sf_fname" placeholder="First name" autocomplete="given-name">
+          <input class="sf-in" id="sf_lname" placeholder="Last name" autocomplete="family-name">
+        </div>
         <div class="sf-ac"><input class="sf-in" id="sf_line1" placeholder="Start typing your address…" autocomplete="off"><div class="ac-list" id="acList"></div></div>
         <input class="sf-in" id="sf_line2" placeholder="Apartment, suite, etc. (optional)" autocomplete="address-line2">
         <div class="sf-row">
@@ -679,7 +682,7 @@ var box=document.getElementById('shipMethods');
 var paySection=document.getElementById('paySection');
 var payFrame=document.getElementById('payFrame');
 var payLoading=document.getElementById('payLoading');
-var REQ=['sf_name','sf_line1','sf_city','sf_state','sf_zip'];
+var REQ=['sf_fname','sf_lname','sf_line1','sf_city','sf_state','sf_zip'];
 var rates=[], selIdx=-1, ratesKey='', ratesLoading=false, finalizeKey='', payMode='', revealDeb, deb;
 var SUBTOTAL=${subtotal};
 var ORIGIN='${HOST_URL}';
@@ -687,8 +690,13 @@ var PLAN='${plan}';
 var GMAPS_KEY=${JSON.stringify(GOOGLE_MAPS_KEY)};
 var SESSION='${session}';
 function gv(id){var el=document.getElementById(id);return el?el.value.trim():'';}
-function readShip(){return {name:gv('sf_name'),country:'US',line1:gv('sf_line1'),line2:gv('sf_line2'),city:gv('sf_city'),state:gv('sf_state'),postalCode:gv('sf_zip')};}
-function validShip(){var ok=true;REQ.forEach(function(id){var el=document.getElementById(id);if(el){if(!el.value.trim()){el.classList.add('bad');ok=false;}else{el.classList.remove('bad');}}});form.classList.toggle('invalid',!ok);return ok;}
+function readShip(){return {name:(gv('sf_fname')+' '+gv('sf_lname')).trim(),country:'US',line1:gv('sf_line1'),line2:gv('sf_line2'),city:gv('sf_city'),state:gv('sf_state'),postalCode:gv('sf_zip')};}
+// validShip(): silent boolean check — never touches the red outline. Used to gate
+// shipping-rate and payment loading as the buyer fills the form.
+function validShip(){var ok=true;REQ.forEach(function(id){var el=document.getElementById(id);if(el&&!el.value.trim())ok=false;});return ok;}
+// markInvalid(): the ONLY thing that applies the red outline + error note — fired
+// only when the buyer tries to place the order with a required field still empty.
+function markInvalid(){var ok=true;REQ.forEach(function(id){var el=document.getElementById(id);if(el){if(!el.value.trim()){el.classList.add('bad');ok=false;}else{el.classList.remove('bad');}}});form.classList.toggle('invalid',!ok);return ok;}
 function money(n){return '$'+(Number(n)||0).toFixed(2);}
 function updateSummary(){
   var ship = selIdx>=0 ? rates[selIdx].price : null;
@@ -770,8 +778,8 @@ window.addEventListener('message',function(e){
   if(d.type==='wh-height' && d.h){ payFrame.style.height=(Number(d.h)+6)+'px'; }
   else if(d.type==='wh-need-address'){
     // Buyer clicked the locked preview button — send them to the first missing field.
-    validShip();
-    var bad=form.querySelector('.bad')||document.getElementById('sf_name');
+    markInvalid();
+    var bad=form.querySelector('.bad')||document.getElementById('sf_fname');
     if(bad){ try{bad.focus();}catch(_){} bad.scrollIntoView({behavior:'smooth',block:'center'}); }
   }
   else if(d.type==='wh-complete'){
